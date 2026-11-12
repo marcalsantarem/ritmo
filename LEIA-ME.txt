@@ -1,0 +1,19 @@
+RITMO MP3 - como testar no iPhone
+
+Um PWA precisa estar publicado em um endereço https. Abrir o index.html
+direto do zip no iPhone não funciona como aplicativo.
+
+Jeito mais rápido (sem instalar nada):
+1. Descompacte o zip no computador.
+2. Abra https://app.netlify.com/drop e arraste a pasta inteira para a página.
+3. Abra no Safari do iPhone o endereço https que o site gerar.
+4. Toque em Compartilhar > "Adicionar à Tela de Início".
+5. Abra o jogo pelo ícone, toque em "Escolher música" e depois em "Jogar".
+
+Alternativas de hospedagem: GitHub Pages, Vercel ou Cloudflare Pages.
+
+Observações:
+- A música precisa estar no app Arquivos do iPhone (ou no iCloud Drive).
+  Músicas do Apple Music/Spotify não aparecem para seleção.
+- Em iOS anterior ao 17, deixe a chave lateral fora do modo silencioso.
+- Fones Bluetooth atrasam o som; para testar, prefira o alto-falante ou fone com fio.

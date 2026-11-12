@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#12121a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ritmo MP3">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<title>Ritmo MP3</title>
+<style>
+  html,body{height:100%}
+  body{margin:0;background:#12121a;color:#eee;font-family:system-ui,-apple-system,sans-serif;
+    display:flex;flex-direction:column;align-items:center;gap:8px;box-sizing:border-box;
+    height:100dvh;overflow:hidden;touch-action:manipulation;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;
+    padding:calc(8px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left))}
+  #bar{display:flex;gap:8px;align-items:center;justify-content:center;width:100%;max-width:480px}
+  .btn{font-size:16px;padding:12px 18px;border:0;border-radius:8px;background:#4caf7a;color:#fff;cursor:pointer;text-align:center;flex:1}
+  .btn.alt{background:#34344a}
+  .btn:disabled{background:#333;color:#777}
+  #file{display:none}
+  #status{margin:0;color:#aaa;font-size:14px;text-align:center;min-height:18px}
+  canvas{background:#1c1c28;border-radius:8px;width:100%;max-width:480px;flex:1;min-height:0;touch-action:none;display:block}
+</style>
+</head>
+<body>
+<div id="bar">
+  <label class="btn alt" for="file">Escolher música</label>
+  <input type="file" id="file" accept="audio/*,.mp3,.m4a,.wav,.ogg">
+  <button class="btn" id="play" disabled>Jogar</button>
+</div>
+<p id="status">Escolha uma música. Toque nas pistas quando as notas chegarem à linha.</p>
+<canvas id="c"></canvas>
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('c'), g = cv.getContext('2d');
+let W = 400, H = 560, LW = 100, HIT_Y = 470, RAD = 22;
+const FALL = 1.5, WINDOW = 0.18;
+const COLORS = ['#4caf7a', '#e05a5a', '#e6c84a', '#4a90e2'], KEYS = ['d', 'f', 'j', 'k'];
+let ctx, buffer, source, notes = [], startAt = 0, playing = false, wake = null;
+let score = 0, combo = 0, hits = 0, flash = [0, 0, 0, 0];
+
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if (!r.width || !r.height) return;
+  cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  W = r.width; H = r.height; LW = W / 4; HIT_Y = H - 90; RAD = Math.min(34, LW * 0.36);
+}
+addEventListener('resize', resize);
+addEventListener('orientationchange', () => setTimeout(resize, 200));
+
+// Gera as notas: detecta saltos de energia no áudio e distribui pelas pistas conforme o "brilho" do som
+function makeNotes(buf) {
+  const d = buf.getChannelData(0), sr = buf.sampleRate, hop = 1024, n = Math.floor(d.length / hop);
+  const e = new Float32Array(n), z = new Float32Array(n), f = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, c = 0;
+    for (let j = i * hop, end = j + hop; j < end; j++) {
+      s += d[j] * d[j];
+      if (j > 0 && (d[j] >= 0) !== (d[j - 1] >= 0)) c++;
+    }
+    e[i] = Math.sqrt(s / hop); z[i] = c;
+    if (i) f[i] = Math.max(0, e[i] - e[i - 1]);
+  }
+  const out = [], R = 20, minGap = 0.2;
+  let last = -1;
+  for (let i = 1; i < n - 1; i++) {
+    let m = 0, k = 0;
+    for (let j = Math.max(0, i - R); j < Math.min(n, i + R); j++) { m += f[j]; k++; }
+    const t = i * hop / sr;
+    if (f[i] > 1.5 * m / k + 0.01 && f[i] >= f[i - 1] && f[i] >= f[i + 1] && t - last > minGap) {
+      out.push({ t, z: z[i], hit: false, missed: false });
+      last = t;
+    }
+  }
+  const sorted = out.map(o => o.z).sort((a, b) => a - b);
+  const q = p => sorted[Math.floor(sorted.length * p)] ?? 0;
+  const q1 = q(0.25), q2 = q(0.5), q3 = q(0.75);
+  out.forEach(o => o.lane = o.z < q1 ? 0 : o.z < q2 ? 1 : o.z < q3 ? 2 : 3);
+  return out;
+}
+
+function decode(ab) {
+  // Forma com callbacks: funciona também em versões antigas do Safari
+  return new Promise((ok, fail) => {
+    const p = ctx.decodeAudioData(ab, ok, fail);
+    if (p && p.catch) p.catch(fail);
+  });
+}
+
+function ensureCtx() {
+  // No iPhone, faz o som sair mesmo com a chave lateral no silencioso (iOS 17+)
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+  ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+}
+
+$('file').onchange = async ev => {
+  const file = ev.target.files[0];
+  if (!file) return;
+  stop();
+  $('play').disabled = true;
+  $('status').textContent = 'Analisando a música...';
+  try {
+    ensureCtx();
+    buffer = await decode(await file.arrayBuffer());
+    notes = makeNotes(buffer);
+    $('status').textContent = notes.length + ' notas geradas. Toque em Jogar.';
+    $('play').disabled = false;
+  } catch (err) {
+    $('status').textContent = 'Não consegui ler esse arquivo. Tente outro MP3.';
+  }
+};
+
+function stop() {
+  if (source) { source.onended = null; try { source.stop(); } catch (e) {} source = null; }
+  playing = false;
+  if (wake) { try { wake.release(); } catch (e) {} wake = null; }
+}
+
+$('play').onclick = () => {
+  if (!buffer) return;
+  stop();
+  ensureCtx();
+  // resume() precisa ser chamado dentro do toque para o iOS liberar o áudio
+  const ready = ctx.state === 'running' ? Promise.resolve() : ctx.resume();
+  Promise.resolve(ready).catch(() => {}).then(() => {
+    notes.forEach(o => { o.hit = o.missed = false; });
+    score = combo = hits = 0;
+    source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    startAt = ctx.currentTime + FALL;
+    source.start(startAt);
+    source.onended = () => {
+      playing = false;
+      if (wake) { try { wake.release(); } catch (e) {} wake = null; }
+      $('status').textContent = 'Fim! Pontos: ' + score + ' · Acertos: ' + hits + '/' + notes.length;
+    };
+    playing = true;
+    $('status').textContent = 'Tocando...';
+    // Mantém a tela ligada durante a música
+    if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wake = w; }).catch(() => {});
+  });
+};
+
+function press(lane) {
+  flash[lane] = 1;
+  if (!playing) return;
+  const now = ctx.currentTime - startAt;
+  let best = null;
+  for (const o of notes) {
+    if (o.t > now + WINDOW) break;
+    if (o.lane === lane && !o.hit && !o.missed && Math.abs(o.t - now) <= WINDOW &&
+        (!best || Math.abs(o.t - now) < Math.abs(best.t - now))) best = o;
+  }
+  if (best) {
+    best.hit = true; combo++; hits++; score += 10 * Math.min(4, 1 + Math.floor(combo / 10));
+    if (navigator.vibrate) navigator.vibrate(10);
+  } else combo = 0;
+}
+
+addEventListener('keydown', ev => {
+  const i = KEYS.indexOf(ev.key.toLowerCase());
+  if (i >= 0 && !ev.repeat) press(i);
+});
+// Cada dedo gera seu próprio pointerdown, então vários toques ao mesmo tempo funcionam
+cv.addEventListener('pointerdown', ev => {
+  ev.preventDefault();
+  const r = cv.getBoundingClientRect();
+  press(Math.max(0, Math.min(3, Math.floor((ev.clientX - r.left) / r.width * 4))));
+});
+cv.addEventListener('touchstart', ev => ev.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', ev => ev.preventDefault());
+
+function draw() {
+  g.clearRect(0, 0, W, H);
+  for (let i = 0; i < 4; i++) {
+    if (flash[i] > 0) {
+      g.globalAlpha = flash[i] * 0.25; g.fillStyle = COLORS[i]; g.fillRect(i * LW, 0, LW, H);
+      g.globalAlpha = 1; flash[i] -= 0.08;
+    }
+    g.strokeStyle = '#2c2c3c'; g.lineWidth = 1; g.strokeRect(i * LW, 0, LW, H);
+    g.strokeStyle = COLORS[i]; g.lineWidth = 4;
+    g.beginPath(); g.arc(i * LW + LW / 2, HIT_Y, RAD, 0, 7); g.stroke();
+  }
+  if (playing) {
+    const now = ctx.currentTime - startAt;
+    for (const o of notes) {
+      if (o.t > now + FALL) break;
+      if (o.hit) continue;
+      if (!o.missed && now - o.t > WINDOW) { o.missed = true; combo = 0; }
+      const y = HIT_Y - (o.t - now) / FALL * HIT_Y;
+      if (y > H + RAD) continue;
+      g.globalAlpha = o.missed ? 0.3 : 1;
+      g.fillStyle = COLORS[o.lane];
+      g.beginPath(); g.arc(o.lane * LW + LW / 2, y, RAD * 0.82, 0, 7); g.fill();
+      g.globalAlpha = 1;
+    }
+  }
+  g.fillStyle = '#eee'; g.font = 'bold 16px system-ui, -apple-system, sans-serif'; g.textAlign = 'left';
+  g.fillText('Pontos: ' + score, 10, 24);
+  g.textAlign = 'right';
+  g.fillText('Combo: ' + combo, W - 10, 24);
+  requestAnimationFrame(draw);
+}
+resize();
+draw();
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
