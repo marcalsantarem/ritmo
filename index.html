@@ -61,8 +61,25 @@ let diffKey = 'hard';
 const COLORS = ['#4caf7a', '#e05a5a', '#e6c84a', '#4a90e2'], KEYS = ['d', 'f', 'j', 'k'];
 let ctx, buffer, source, notes = [], startAt = 0, playing = false, paused = false, wake = null;
 let score = 0, combo = 0, hits = 0, lastFrame = performance.now();
-const flash = [0, 0, 0, 0], receptorPop = [0, 0, 0, 0];
-const particles = [], rings = [], popups = [];
+const flash = [0, 0, 0, 0], receptorPop = [0, 0, 0, 0], stringVib = [0, 0, 0];
+const particles = [], rings = [], popups = [], comboBanners = [];
+const BG_SYMBOLS = ['♪', '♫', '♩', '♬', '𝄞'];
+const bgNotes = Array.from({ length: 18 }, (_, i) => ({
+  x: (i * 0.6180339) % 1,
+  y: Math.random(),
+  speed: 0.015 + Math.random() * 0.025,
+  size: 16 + Math.random() * 20,
+  sym: BG_SYMBOLS[i % BG_SYMBOLS.length],
+  alpha: 0.04 + Math.random() * 0.055,
+  sway: Math.random() * Math.PI * 2,
+  rot: (Math.random() - 0.5) * 0.35
+}));
+const COMBO_MILESTONES = {
+  10:  { sub: 'NO RITMO!',   color: '#4caf7a', glow: 'rgba(76, 175, 122, 0.45)' },
+  25:  { sub: 'AQUECENDO!',  color: '#e6c84a', glow: 'rgba(230, 200, 74, 0.50)' },
+  50:  { sub: 'EM CHAMAS!',  color: '#ff7b54', glow: 'rgba(255, 123, 84, 0.55)' },
+  100: { sub: 'LENDÁRIO!',   color: '#c77dff', glow: 'rgba(199, 125, 255, 0.65)' }
+};
 
 function resize() {
   const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
@@ -192,7 +209,8 @@ $('play').onclick = () => {
     const cfg = DIFFS[diffKey];
     notes.forEach(o => { o.hit = o.missed = false; });
     score = combo = hits = 0;
-    particles.length = rings.length = popups.length = 0;
+    particles.length = rings.length = popups.length = comboBanners.length = 0;
+    stringVib.fill(0);
     source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
@@ -221,6 +239,8 @@ $('play').onclick = () => {
 function spawnHitEffect(lane, label, pts) {
   const x = lane * LW + LW / 2, y = HIT_Y, color = COLORS[lane];
   receptorPop[lane] = 1;
+  if (lane > 0) stringVib[lane - 1] = 1;
+  if (lane < 3) stringVib[lane] = 1;
   rings.push({ x, y, r: RAD * 0.9, maxR: RAD * 2.4, color, life: 1 });
   rings.push({ x, y, r: RAD * 0.5, maxR: RAD * 1.7, color: '#ffffff', life: 0.85 });
   for (let i = 0; i < 14; i++) {
@@ -236,6 +256,19 @@ function spawnHitEffect(lane, label, pts) {
     });
   }
   popups.push({ x, y: y - RAD - 10, text: `${label} +${pts}`, color, life: 1 });
+}
+
+function triggerComboBanner(count) {
+  const m = COMBO_MILESTONES[count];
+  if (!m) return;
+  comboBanners.push({
+    title: `${count} NOTAS!`,
+    sub: m.sub,
+    color: m.color,
+    glow: m.glow,
+    life: 1,
+    duration: count >= 50 ? 2.1 : 1.7
+  });
 }
 
 function press(lane) {
@@ -260,6 +293,7 @@ function press(lane) {
     const err = Math.abs(best.t - now);
     const label = err <= win * 0.35 ? 'PERFEITO!' : err <= win * 0.7 ? 'ÓTIMO!' : 'BOM!';
     spawnHitEffect(lane, label, pts);
+    triggerComboBanner(combo);
     if (navigator.vibrate) navigator.vibrate(10);
   } else {
     combo = 0;
@@ -284,21 +318,152 @@ document.addEventListener('gesturestart', ev => ev.preventDefault());
 function drawNote(x, y, color, alpha) {
   const r = RAD * 0.82;
   g.save();
-  g.globalAlpha = alpha * 0.25;
+  g.globalAlpha = alpha * 0.28;
   g.fillStyle = color;
-  g.beginPath(); g.arc(x, y, r * 1.32, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(x, y, r * 1.36, 0, Math.PI * 2); g.fill();
 
   g.globalAlpha = alpha;
-  const grad = g.createRadialGradient(x - r * 0.28, y - r * 0.28, r * 0.1, x, y, r);
+  const grad = g.createRadialGradient(x - r * 0.28, y - r * 0.28, r * 0.08, x, y, r);
   grad.addColorStop(0, '#ffffff');
-  grad.addColorStop(0.32, color);
-  grad.addColorStop(1, '#10101a');
+  grad.addColorStop(0.28, color);
+  grad.addColorStop(0.88, '#141422');
+  grad.addColorStop(1, '#090910');
   g.fillStyle = grad;
   g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
 
-  g.strokeStyle = 'rgba(255,255,255,0.6)';
-  g.lineWidth = 1.5;
+  // Aro externo e brilho especular
+  g.strokeStyle = 'rgba(255,255,255,0.68)';
+  g.lineWidth = 1.6;
   g.beginPath(); g.arc(x, y, r - 1, 0, Math.PI * 2); g.stroke();
+
+  g.fillStyle = 'rgba(255,255,255,0.55)';
+  g.beginPath();
+  g.ellipse(x - r * 0.28, y - r * 0.32, r * 0.24, r * 0.12, -0.6, 0, Math.PI * 2);
+  g.fill();
+  g.restore();
+}
+
+function drawBackground(dt, ts) {
+  // Paleta escura para manter máximo contraste com as notas
+  const bg = g.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#0a0b13');
+  bg.addColorStop(0.5, '#111220');
+  bg.addColorStop(1, '#0c0d17');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, W, H);
+
+  // Vinheta / brilho sutil no centro
+  const rg = g.createRadialGradient(W / 2, H * 0.45, 20, W / 2, H * 0.45, Math.max(W, H) * 0.72);
+  rg.addColorStop(0, 'rgba(64, 72, 130, 0.10)');
+  rg.addColorStop(1, 'rgba(5, 5, 10, 0.35)');
+  g.fillStyle = rg;
+  g.fillRect(0, 0, W, H);
+
+  // Trastes sutis do braço (frets) para compor com as cordas
+  const fretGap = 76;
+  for (let y = fretGap; y < HIT_Y - 24; y += fretGap) {
+    g.fillStyle = 'rgba(0,0,0,0.45)';
+    g.fillRect(0, y + 1, W, 1.5);
+    g.fillStyle = 'rgba(180,190,230,0.04)';
+    g.fillRect(0, y, W, 1);
+  }
+
+  // Pauta musical discreta no fundo
+  g.strokeStyle = 'rgba(130, 145, 210, 0.045)';
+  g.lineWidth = 1;
+  const staffTop = H * 0.22;
+  for (let s = 0; s < 5; s++) {
+    const sy = staffTop + s * 11;
+    g.beginPath();
+    g.moveTo(0, sy);
+    g.lineTo(W, sy);
+    g.stroke();
+  }
+
+  // Notas musicais flutuantes em tons escuros/suaves
+  g.save();
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  for (const n of bgNotes) {
+    n.y -= n.speed * dt;
+    if (n.y < -0.08) { n.y = 1.08; n.x = (n.x + 0.37) % 1; }
+    const px = n.x * W + Math.sin(ts * 0.0008 + n.sway) * 10;
+    const py = n.y * H;
+    g.save();
+    g.translate(px, py);
+    g.rotate(n.rot + Math.sin(ts * 0.0006 + n.sway) * 0.08);
+    g.globalAlpha = n.alpha;
+    g.fillStyle = '#7e88c4';
+    g.font = `${n.size}px Georgia, serif`;
+    g.fillText(n.sym, 0, 0);
+    g.restore();
+  }
+  g.restore();
+}
+
+function drawGuitarString(idx, x, vib, ts) {
+  const gauge = [3.2, 2.7, 2.2][idx];
+  const trace = offset => {
+    g.beginPath();
+    if (vib > 0.01) {
+      const steps = 22;
+      const amp = vib * 2.4;
+      for (let s = 0; s <= steps; s++) {
+        const y = (s / steps) * H;
+        const env = Math.sin((s / steps) * Math.PI);
+        const dx = Math.sin(y * 0.08 + ts * 0.06 + idx) * amp * env;
+        if (s === 0) g.moveTo(x + offset + dx, y);
+        else g.lineTo(x + offset + dx, y);
+      }
+    } else {
+      g.moveTo(x + offset, 0);
+      g.lineTo(x + offset, H);
+    }
+  };
+
+  g.save();
+  g.lineCap = 'butt';
+
+  // Sombra / canal escuro atrás da corda
+  g.strokeStyle = 'rgba(0,0,0,0.7)';
+  g.lineWidth = gauge + 3;
+  trace(1.2);
+  g.stroke();
+
+  // Brilho sutil quando a corda vibra
+  if (vib > 0.05) {
+    g.strokeStyle = `rgba(230, 210, 165, ${vib * 0.25})`;
+    g.lineWidth = gauge + 5;
+    trace(0);
+    g.stroke();
+  }
+
+  // Núcleo metálico da corda (bronze/aço)
+  g.strokeStyle = idx === 0 ? '#7d6e5d' : idx === 1 ? '#877c6f' : '#8d929c';
+  g.lineWidth = gauge;
+  trace(0);
+  g.stroke();
+
+  // Textura de enrolamento (corda encapada)
+  g.setLineDash([1.5, 2.5]);
+  g.strokeStyle = 'rgba(20, 18, 16, 0.55)';
+  g.lineWidth = gauge * 0.95;
+  trace(0);
+  g.stroke();
+
+  g.lineDashOffset = 1.5;
+  g.strokeStyle = 'rgba(235, 228, 215, 0.32)';
+  g.lineWidth = gauge * 0.7;
+  trace(-0.3);
+  g.stroke();
+  g.setLineDash([]);
+
+  // Filete especular metálico
+  g.strokeStyle = 'rgba(255, 255, 255, 0.42)';
+  g.lineWidth = 0.75;
+  trace(-gauge * 0.24);
+  g.stroke();
+
   g.restore();
 }
 
@@ -307,23 +472,25 @@ function draw(ts) {
   lastFrame = ts;
   const cfg = DIFFS[diffKey];
 
-  // Fundo com gradiente sutil
-  const bg = g.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#12121d');
-  bg.addColorStop(1, '#1a1a2a');
-  g.fillStyle = bg;
-  g.fillRect(0, 0, W, H);
+  drawBackground(dt, ts);
 
-  // Linha horizontal de acerto
-  g.strokeStyle = 'rgba(255,255,255,0.12)';
+  // Linha horizontal de acerto (ponte/rastilho)
+  g.save();
+  g.fillStyle = 'rgba(0,0,0,0.45)';
+  g.fillRect(0, HIT_Y + 1, W, 3);
+  const hitLineGrad = g.createLinearGradient(0, 0, W, 0);
+  hitLineGrad.addColorStop(0, 'rgba(255,255,255,0.06)');
+  hitLineGrad.addColorStop(0.5, 'rgba(255,255,255,0.22)');
+  hitLineGrad.addColorStop(1, 'rgba(255,255,255,0.06)');
+  g.strokeStyle = hitLineGrad;
   g.lineWidth = 2;
   g.beginPath(); g.moveTo(0, HIT_Y); g.lineTo(W, HIT_Y); g.stroke();
+  g.restore();
 
-  // Pistas e receptores
+  // Pistas e flashes
   for (let i = 0; i < 4; i++) {
-    const cx = i * LW + LW / 2;
     if (flash[i] > 0) {
-      const fg = g.createLinearGradient(0, HIT_Y - 180, 0, H);
+      const fg = g.createLinearGradient(0, HIT_Y - 190, 0, H);
       fg.addColorStop(0, 'rgba(0,0,0,0)');
       fg.addColorStop(0.75, COLORS[i]);
       fg.addColorStop(1, 'rgba(0,0,0,0)');
@@ -333,28 +500,37 @@ function draw(ts) {
       g.globalAlpha = 1;
       flash[i] = Math.max(0, flash[i] - dt * 5);
     }
-    if (i > 0) {
-      g.strokeStyle = 'rgba(255,255,255,0.06)';
-      g.lineWidth = 1;
-      g.beginPath(); g.moveTo(i * LW, 0); g.lineTo(i * LW, H); g.stroke();
-    }
+  }
 
+  // Paredes entre as notas como cordas de guitarra
+  for (let i = 0; i < 3; i++) {
+    if (stringVib[i] > 0) stringVib[i] = Math.max(0, stringVib[i] - dt * 3.4);
+    drawGuitarString(i, (i + 1) * LW, stringVib[i], ts);
+  }
+
+  // Receptores
+  for (let i = 0; i < 4; i++) {
+    const cx = i * LW + LW / 2;
     const pop = receptorPop[i];
     if (pop > 0) receptorPop[i] = Math.max(0, pop - dt * 6);
     const rr = RAD * (1 + pop * 0.16);
 
-    g.globalAlpha = 0.14 + pop * 0.28;
+    g.globalAlpha = 0.16 + pop * 0.30;
     g.fillStyle = COLORS[i];
-    g.beginPath(); g.arc(cx, HIT_Y, rr * 1.28, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(cx, HIT_Y, rr * 1.32, 0, Math.PI * 2); g.fill();
 
     g.globalAlpha = 1;
-    g.fillStyle = 'rgba(16,16,26,0.85)';
+    g.fillStyle = 'rgba(12,12,20,0.88)';
     g.beginPath(); g.arc(cx, HIT_Y, rr, 0, Math.PI * 2); g.fill();
     g.strokeStyle = COLORS[i];
     g.lineWidth = 3.5 + pop * 2;
     g.beginPath(); g.arc(cx, HIT_Y, rr, 0, Math.PI * 2); g.stroke();
 
-    g.fillStyle = 'rgba(255,255,255,0.35)';
+    g.strokeStyle = 'rgba(255,255,255,0.22)';
+    g.lineWidth = 1;
+    g.beginPath(); g.arc(cx, HIT_Y, rr * 0.74, 0, Math.PI * 2); g.stroke();
+
+    g.fillStyle = 'rgba(255,255,255,0.42)';
     g.font = 'bold 12px system-ui, -apple-system, sans-serif';
     g.textAlign = 'center';
     g.textBaseline = 'middle';
@@ -423,10 +599,61 @@ function draw(ts) {
     g.fillStyle = p.color;
     g.fillText(p.text, p.x, p.y);
   }
+  // Avisos de marco de combo (10, 25, 50, 100)
+  for (let i = comboBanners.length - 1; i >= 0; i--) {
+    const b = comboBanners[i];
+    b.life -= dt / b.duration;
+    if (b.life <= 0) { comboBanners.splice(i, 1); continue; }
+    const elapsed = 1 - b.life;
+    const scale = elapsed < 0.14
+      ? 0.65 + (elapsed / 0.14) * 0.43
+      : elapsed < 0.25
+        ? 1.08 - ((elapsed - 0.14) / 0.11) * 0.08
+        : 1;
+    const alpha = b.life < 0.25 ? b.life / 0.25 : Math.min(1, elapsed / 0.08);
+    const by = H * 0.28 - elapsed * 18;
+
+    g.save();
+    g.translate(W / 2, by);
+    g.scale(scale, scale);
+    g.globalAlpha = alpha;
+
+    // Brilho atrás do aviso
+    const glow = g.createRadialGradient(0, 0, 8, 0, 0, 110);
+    glow.addColorStop(0, b.glow);
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = glow;
+    g.beginPath(); g.arc(0, 0, 110, 0, Math.PI * 2); g.fill();
+
+    // Cartão escuro translúcido
+    const bw = Math.min(W - 36, 224), bh = 58, br = 14;
+    g.fillStyle = 'rgba(12, 13, 24, 0.88)';
+    g.beginPath();
+    if (g.roundRect) g.roundRect(-bw / 2, -bh / 2, bw, bh, br);
+    else g.rect(-bw / 2, -bh / 2, bw, bh);
+    g.fill();
+    g.strokeStyle = b.color;
+    g.lineWidth = 2;
+    g.stroke();
+
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillStyle = b.color;
+    g.font = '900 22px system-ui, -apple-system, sans-serif';
+    g.fillText(b.title, 0, -9);
+
+    g.fillStyle = '#e8eaf6';
+    g.font = '700 12px system-ui, -apple-system, sans-serif';
+    g.fillText(`♪ ${b.sub} ♪`, 0, 14);
+    g.restore();
+  }
   g.globalAlpha = 1;
 
   // HUD
   const mult = Math.min(4, 1 + Math.floor(combo / 10));
+  g.save();
+  g.shadowColor = 'rgba(0,0,0,0.75)';
+  g.shadowBlur = 4;
   g.fillStyle = '#eee';
   g.font = 'bold 16px system-ui, -apple-system, sans-serif';
   g.textAlign = 'left';
@@ -434,6 +661,7 @@ function draw(ts) {
   g.textAlign = 'right';
   g.fillStyle = mult > 1 ? '#e6c84a' : '#eee';
   g.fillText(`Combo: ${combo} (x${mult})`, W - 12, 26);
+  g.restore();
 
   if (paused) {
     g.fillStyle = 'rgba(10,10,18,0.68)';
