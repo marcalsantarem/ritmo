@@ -1,5 +1,5 @@
 // Guarda os arquivos do jogo para ele abrir sem internet
-const CACHE = 'ritmo-mp3-v2';
+const CACHE = 'ritmo-mp3-v3';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

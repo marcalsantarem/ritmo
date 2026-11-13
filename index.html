@@ -39,6 +39,7 @@
   <label class="btn alt" for="file">Escolher música</label>
   <input type="file" id="file" accept="audio/*,.mp3,.m4a,.wav,.ogg">
   <button class="btn" id="play" disabled>Jogar</button>
+  <button class="btn alt" id="pause" disabled>Pausar</button>
 </div>
 <div id="diff" role="group" aria-label="Dificuldade">
   <button class="dbtn" data-diff="easy">Fácil</button>
@@ -58,7 +59,7 @@ const DIFFS = {
 };
 let diffKey = 'hard';
 const COLORS = ['#4caf7a', '#e05a5a', '#e6c84a', '#4a90e2'], KEYS = ['d', 'f', 'j', 'k'];
-let ctx, buffer, source, notes = [], startAt = 0, playing = false, wake = null;
+let ctx, buffer, source, notes = [], startAt = 0, playing = false, paused = false, wake = null;
 let score = 0, combo = 0, hits = 0, lastFrame = performance.now();
 const flash = [0, 0, 0, 0], receptorPop = [0, 0, 0, 0];
 const particles = [], rings = [], popups = [];
@@ -153,8 +154,33 @@ $('file').onchange = async ev => {
 function stop() {
   if (source) { source.onended = null; try { source.stop(); } catch (e) {} source = null; }
   playing = false;
+  paused = false;
+  $('pause').disabled = true;
+  $('pause').textContent = 'Pausar';
+  $('play').textContent = 'Jogar';
   if (wake) { try { wake.release(); } catch (e) {} wake = null; }
 }
+
+function togglePause() {
+  if (!playing || !ctx) return;
+  const cfg = DIFFS[diffKey];
+  if (!paused) {
+    paused = true;
+    ctx.suspend().catch(() => {});
+    $('pause').textContent = 'Continuar';
+    $('status').textContent = `Pausado (${cfg.label})`;
+    if (wake) { try { wake.release(); } catch (e) {} wake = null; }
+  } else {
+    ctx.resume().catch(() => {}).then(() => {
+      paused = false;
+      $('pause').textContent = 'Pausar';
+      $('status').textContent = `Tocando (${cfg.label})...`;
+      if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wake = w; }).catch(() => {});
+    });
+  }
+}
+
+$('pause').onclick = togglePause;
 
 $('play').onclick = () => {
   if (!buffer) return;
@@ -174,10 +200,18 @@ $('play').onclick = () => {
     source.start(startAt);
     source.onended = () => {
       playing = false;
+      paused = false;
+      $('pause').disabled = true;
+      $('pause').textContent = 'Pausar';
+      $('play').textContent = 'Jogar';
       if (wake) { try { wake.release(); } catch (e) {} wake = null; }
       $('status').textContent = 'Fim! Pontos: ' + score + ' · Acertos: ' + hits + '/' + notes.length;
     };
     playing = true;
+    paused = false;
+    $('pause').disabled = false;
+    $('pause').textContent = 'Pausar';
+    $('play').textContent = 'Reiniciar';
     $('status').textContent = `Tocando (${cfg.label})...`;
     // Mantém a tela ligada durante a música
     if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wake = w; }).catch(() => {});
@@ -205,6 +239,7 @@ function spawnHitEffect(lane, label, pts) {
 }
 
 function press(lane) {
+  if (paused) return;
   flash[lane] = 1;
   if (!playing) return;
   const win = DIFFS[diffKey].window;
@@ -232,7 +267,9 @@ function press(lane) {
 }
 
 addEventListener('keydown', ev => {
-  const i = KEYS.indexOf(ev.key.toLowerCase());
+  const k = ev.key.toLowerCase();
+  if ((k === 'p' || ev.key === 'Escape') && !ev.repeat) { togglePause(); return; }
+  const i = KEYS.indexOf(k);
   if (i >= 0 && !ev.repeat) press(i);
 });
 // Cada dedo gera seu próprio pointerdown, então vários toques ao mesmo tempo funcionam
@@ -397,6 +434,18 @@ function draw(ts) {
   g.textAlign = 'right';
   g.fillStyle = mult > 1 ? '#e6c84a' : '#eee';
   g.fillText(`Combo: ${combo} (x${mult})`, W - 12, 26);
+
+  if (paused) {
+    g.fillStyle = 'rgba(10,10,18,0.68)';
+    g.fillRect(0, 0, W, H);
+    g.fillStyle = '#fff';
+    g.font = 'bold 28px system-ui, -apple-system, sans-serif';
+    g.textAlign = 'center';
+    g.fillText('PAUSADO', W / 2, H / 2 - 6);
+    g.fillStyle = '#b4b4cc';
+    g.font = '14px system-ui, -apple-system, sans-serif';
+    g.fillText('Toque em Continuar para voltar', W / 2, H / 2 + 22);
+  }
 
   requestAnimationFrame(draw);
 }
