@@ -28,6 +28,9 @@
   #diff{display:flex;gap:4px;width:100%;max-width:480px;background:#1a1a26;padding:4px;border-radius:10px;border:1px solid #2b2b3d;box-sizing:border-box}
   .dbtn{flex:1;border:0;border-radius:7px;padding:7px 8px;font-size:13px;font-weight:600;background:transparent;color:#9a9ab0;cursor:pointer;transition:background .15s,color .15s}
   .dbtn.active{background:#34344d;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,0.3)}
+  #sync{display:flex;align-items:center;gap:8px;width:100%;max-width:480px;background:#1a1a26;padding:5px 10px;border-radius:10px;border:1px solid #2b2b3d;box-sizing:border-box;font-size:12px;color:#9a9ab0}
+  #sync input[type=range]{flex:1;accent-color:#4caf7a;margin:0;height:18px;cursor:pointer}
+  #latVal{min-width:52px;text-align:right;color:#eee;font-variant-numeric:tabular-nums;font-weight:600}
   #file{display:none}
   #status{margin:0;color:#a8a8be;font-size:13px;text-align:center;min-height:18px;max-width:480px}
   canvas{background:#141420;border-radius:12px;border:1px solid #29293b;box-shadow:0 8px 28px rgba(0,0,0,0.45);
@@ -46,6 +49,11 @@
   <button class="dbtn" data-diff="medium">Médio</button>
   <button class="dbtn active" data-diff="hard">Difícil</button>
 </div>
+<div id="sync">
+  <span>Atraso:</span>
+  <input type="range" id="lat" min="-200" max="200" step="10" value="0" aria-label="Ajuste de latência em milissegundos">
+  <span id="latVal">0 ms</span>
+</div>
 <p id="status">Escolha uma música. Toque nas pistas quando as notas chegarem à linha.</p>
 <canvas id="c"></canvas>
 <script>
@@ -53,11 +61,14 @@ const $ = id => document.getElementById(id);
 const cv = $('c'), g = cv.getContext('2d');
 let W = 400, H = 560, LW = 100, HIT_Y = 470, RAD = 22;
 const DIFFS = {
-  easy:   { label: 'Fácil',   fall: 2.1, window: 0.24, mult: 2.25, bias: 0.020, minGap: 0.55 },
-  medium: { label: 'Médio',   fall: 1.8, window: 0.21, mult: 1.85, bias: 0.015, minGap: 0.36 },
-  hard:   { label: 'Difícil', fall: 1.5, window: 0.18, mult: 1.50, bias: 0.010, minGap: 0.20 }
+  easy:   { label: 'Fácil',   fall: 2.1, window: 0.24, mult: 1.65, bias: 0.080, subdiv: 1, snap: 0.35, beatTol: 0.24, minGapFactor: 0.85, minGapFloor: 0.42 },
+  medium: { label: 'Médio',   fall: 1.8, window: 0.21, mult: 1.38, bias: 0.055, subdiv: 2, snap: 0.25, beatTol: 0.28, minGapFactor: 0.45, minGapFloor: 0.26 },
+  hard:   { label: 'Difícil', fall: 1.5, window: 0.18, mult: 1.18, bias: 0.035, subdiv: 4, snap: 0.15, beatTol: 0.34, minGapFactor: 0.22, minGapFloor: 0.15 }
 };
 let diffKey = 'hard';
+let latencyMs = Number(localStorage.getItem('ritmo_lat_ms') || 0);
+if (Number.isNaN(latencyMs)) latencyMs = 0;
+let detectedBpm = 0;
 const COLORS = ['#4caf7a', '#e05a5a', '#e6c84a', '#4a90e2'], KEYS = ['d', 'f', 'j', 'k'];
 let ctx, buffer, source, notes = [], startAt = 0, playing = false, paused = false, wake = null;
 let score = 0, combo = 0, hits = 0, lastFrame = performance.now();
@@ -91,35 +102,141 @@ function resize() {
 addEventListener('resize', resize);
 addEventListener('orientationchange', () => setTimeout(resize, 200));
 
-// Gera as notas: detecta saltos de energia no áudio e distribui pelas pistas conforme o "brilho" do som
+// Gera as notas: mistura estéreo, separa em 3 bandas (grave/médio/agudo), estima o BPM e alinha ao pulso
 function makeNotes(buf, key = diffKey) {
   const cfg = DIFFS[key];
-  const d = buf.getChannelData(0), sr = buf.sampleRate, hop = 1024, n = Math.floor(d.length / hop);
-  const e = new Float32Array(n), z = new Float32Array(n), f = new Float32Array(n);
+  const ch0 = buf.getChannelData(0);
+  const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : null;
+  const sr = buf.sampleRate, hop = 512, n = Math.floor(ch0.length / hop);
+  const fps = sr / hop;
+
+  // Filtros passa-baixa em cascata para separar graves (<160 Hz), médios (160–2200 Hz) e agudos (>2200 Hz)
+  const a1 = 1 - Math.exp(-2 * Math.PI * 160 / sr);
+  const a2 = 1 - Math.exp(-2 * Math.PI * 2200 / sr);
+  let lp1a = 0, lp1b = 0, lp2a = 0, lp2b = 0;
+
+  const eL = new Float32Array(n), eM = new Float32Array(n), eH = new Float32Array(n);
+  const rmsAll = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    let s = 0, c = 0;
+    let sL = 0, sM = 0, sH = 0, sAll = 0;
     for (let j = i * hop, end = j + hop; j < end; j++) {
-      s += d[j] * d[j];
-      if (j > 0 && (d[j] >= 0) !== (d[j - 1] >= 0)) c++;
+      const x = ch1 ? 0.5 * (ch0[j] + ch1[j]) : ch0[j];
+      lp1a += a1 * (x - lp1a); lp1b += a1 * (lp1a - lp1b);
+      lp2a += a2 * (x - lp2a); lp2b += a2 * (lp2a - lp2b);
+      const low = lp1b;
+      const mid = lp2b - lp1b;
+      const high = x - lp2b;
+      sL += low * low;
+      sM += mid * mid;
+      sH += high * high;
+      sAll += x * x;
     }
-    e[i] = Math.sqrt(s / hop); z[i] = c;
-    if (i) f[i] = Math.max(0, e[i] - e[i - 1]);
+    eL[i] = Math.log1p(100 * Math.sqrt(sL / hop));
+    eM[i] = Math.log1p(100 * Math.sqrt(sM / hop));
+    eH[i] = Math.log1p(100 * Math.sqrt(sH / hop));
+    rmsAll[i] = Math.sqrt(sAll / hop);
   }
-  const out = [], R = 20;
-  let last = -1;
+
+  // Fluxo espectral positivo por banda e curva combinada de onsets
+  const fL = new Float32Array(n), fM = new Float32Array(n), fH = new Float32Array(n), odf = new Float32Array(n);
+  for (let i = 1; i < n; i++) {
+    fL[i] = Math.max(0, eL[i] - eL[i - 1]);
+    fM[i] = Math.max(0, eM[i] - eM[i - 1]);
+    fH[i] = Math.max(0, eH[i] - eH[i - 1]);
+    odf[i] = 1.25 * fL[i] + 1.0 * fM[i] + 0.75 * fH[i];
+  }
+
+  // Estimativa de BPM por autocorrelação (70–175 BPM)
+  const lagMin = Math.max(4, Math.floor(fps * 60 / 175));
+  const lagMax = Math.min(Math.floor(n / 3), Math.ceil(fps * 60 / 70));
+  const winStart = Math.floor(n * 0.1);
+  const winEnd = Math.min(n - lagMax - 1, winStart + Math.floor(fps * 60));
+  let bestLag = Math.round(fps * 0.5), bestCorr = -1;
+  for (let lag = lagMin; lag <= lagMax; lag++) {
+    let sum = 0;
+    for (let i = winStart; i < winEnd; i += 2) sum += odf[i] * odf[i + lag];
+    const bpm = 60 * fps / lag;
+    const prior = 1 - 0.15 * Math.abs(bpm - 120) / 60;
+    const score = sum * prior;
+    if (score > bestCorr) { bestCorr = score; bestLag = lag; }
+  }
+  const beatSec = bestLag / fps;
+  detectedBpm = Math.round(60 / beatSec);
+
+  // Fase inicial da batida
+  let bestPhase = 0, bestPhaseScore = -1;
+  for (let p = 0; p < bestLag; p++) {
+    let sum = 0;
+    for (let i = p; i < n; i += bestLag) sum += odf[i];
+    if (sum > bestPhaseScore) { bestPhaseScore = sum; bestPhase = p; }
+  }
+  const phaseSec = bestPhase / fps;
+
+  // Limiar adaptativo por mediana móvel
+  const R = 14, winArr = new Float32Array(2 * R + 1);
+  const candidates = [];
   for (let i = 1; i < n - 1; i++) {
-    let m = 0, k = 0;
-    for (let j = Math.max(0, i - R); j < Math.min(n, i + R); j++) { m += f[j]; k++; }
-    const t = i * hop / sr;
-    if (f[i] > cfg.mult * m / k + cfg.bias && f[i] >= f[i - 1] && f[i] >= f[i + 1] && t - last > cfg.minGap) {
-      out.push({ t, z: z[i], hit: false, missed: false });
-      last = t;
+    if (rmsAll[i] < 0.012) continue;
+    if (odf[i] < odf[i - 1] || odf[i] < odf[i + 1]) continue;
+    let k = 0;
+    for (let j = Math.max(0, i - R); j <= Math.min(n - 1, i + R); j++) winArr[k++] = odf[j];
+    const slice = winArr.subarray(0, k).sort();
+    const med = slice[k >> 1];
+    const thresh = cfg.mult * med + cfg.bias;
+    if (odf[i] <= thresh) continue;
+
+    const rawT = i / fps;
+    const step = beatSec / cfg.subdiv;
+    const gridIdx = Math.round((rawT - phaseSec) / step);
+    const gridT = phaseSec + gridIdx * step;
+    const distNorm = Math.abs(rawT - gridT) / step;
+    const isStrongSyncopation = odf[i] > thresh * 1.65;
+    if (distNorm > cfg.beatTol && !isStrongSyncopation) continue;
+
+    const t = distNorm <= cfg.beatTol ? rawT * (1 - cfg.snap) + gridT * cfg.snap : rawT;
+    if (t < 0.15) continue;
+    const bright = (0.0 * fL[i] + 1.5 * fM[i] + 3.0 * fH[i]) / (fL[i] + fM[i] + fH[i] + 1e-6);
+    candidates.push({ t, str: odf[i], bright, hit: false, missed: false });
+  }
+
+  // Filtragem por intervalo mínimo proporcional ao BPM (mantendo o pico mais forte)
+  const minGap = Math.max(cfg.minGapFloor, beatSec * cfg.minGapFactor);
+  const out = [];
+  for (const c of candidates) {
+    const prev = out[out.length - 1];
+    if (!prev || c.t - prev.t >= minGap) {
+      out.push(c);
+    } else if (c.str > prev.str * 1.15) {
+      out[out.length - 1] = c;
     }
   }
-  const sorted = out.map(o => o.z).sort((a, b) => a - b);
+
+  // Mapeamento de pistas por brilho adaptativo + suavização de fluxo
+  const sorted = out.map(o => o.bright).sort((a, b) => a - b);
   const q = p => sorted[Math.floor(sorted.length * p)] ?? 0;
   const q1 = q(0.25), q2 = q(0.5), q3 = q(0.75);
-  out.forEach(o => o.lane = o.z < q1 ? 0 : o.z < q2 ? 1 : o.z < q3 ? 2 : 3);
+  let repeatCount = 0;
+  for (let i = 0; i < out.length; i++) {
+    const o = out[i];
+    let lane = o.bright < q1 ? 0 : o.bright < q2 ? 1 : o.bright < q3 ? 2 : 3;
+    if (i > 0) {
+      const prev = out[i - 1];
+      const dt = o.t - prev.t;
+      if (dt < 0.26 && Math.abs(lane - prev.lane) === 3 && Math.abs(o.bright - prev.bright) < 1.2) {
+        lane = lane > prev.lane ? 2 : 1;
+      }
+      if (lane === prev.lane && dt < 0.32) {
+        repeatCount++;
+        if (repeatCount >= 2) {
+          lane = lane === 3 ? 2 : lane + 1;
+          repeatCount = 0;
+        }
+      } else {
+        repeatCount = 0;
+      }
+    }
+    o.lane = lane;
+  }
   return out;
 }
 
@@ -137,6 +254,17 @@ function ensureCtx() {
   ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
 }
 
+function formatLat(ms) {
+  return (ms > 0 ? '+' : '') + ms + ' ms';
+}
+$('lat').value = latencyMs;
+$('latVal').textContent = formatLat(latencyMs);
+$('lat').oninput = ev => {
+  latencyMs = Number(ev.target.value);
+  $('latVal').textContent = formatLat(latencyMs);
+  localStorage.setItem('ritmo_lat_ms', String(latencyMs));
+};
+
 document.querySelectorAll('.dbtn').forEach(btn => {
   btn.onclick = () => {
     const next = btn.dataset.diff;
@@ -146,7 +274,8 @@ document.querySelectorAll('.dbtn').forEach(btn => {
     if (buffer) {
       stop();
       notes = makeNotes(buffer, diffKey);
-      $('status').textContent = `${DIFFS[diffKey].label}: ${notes.length} notas geradas. Toque em Jogar.`;
+      const bpmTxt = detectedBpm ? ` · ${detectedBpm} BPM` : '';
+      $('status').textContent = `${DIFFS[diffKey].label}${bpmTxt}: ${notes.length} notas geradas. Toque em Jogar.`;
     }
   };
 });
@@ -161,7 +290,8 @@ $('file').onchange = async ev => {
     ensureCtx();
     buffer = await decode(await file.arrayBuffer());
     notes = makeNotes(buffer, diffKey);
-    $('status').textContent = `${DIFFS[diffKey].label}: ${notes.length} notas geradas. Toque em Jogar.`;
+    const bpmTxt = detectedBpm ? ` · ${detectedBpm} BPM` : '';
+    $('status').textContent = `${DIFFS[diffKey].label}${bpmTxt}: ${notes.length} notas geradas. Toque em Jogar.`;
     $('play').disabled = false;
   } catch (err) {
     $('status').textContent = 'Não consegui ler esse arquivo. Tente outro MP3.';
@@ -276,7 +406,7 @@ function press(lane) {
   flash[lane] = 1;
   if (!playing) return;
   const win = DIFFS[diffKey].window;
-  const now = ctx.currentTime - startAt;
+  const now = ctx.currentTime - startAt - latencyMs / 1000;
   let best = null;
   for (const o of notes) {
     if (o.t > now + win) break;
@@ -540,7 +670,7 @@ function draw(ts) {
 
   // Notas caindo e barra de progresso
   if (playing) {
-    const now = ctx.currentTime - startAt;
+    const now = ctx.currentTime - startAt - latencyMs / 1000;
     if (buffer && buffer.duration > 0) {
       const prog = Math.max(0, Math.min(1, now / buffer.duration));
       g.fillStyle = 'rgba(255,255,255,0.08)';
