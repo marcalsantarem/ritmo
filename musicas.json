@@ -1,0 +1,27 @@
+[
+  {
+    "titulo": "Black",
+    "artista": "Pearl Jam",
+    "arquivo": "musicas/Black-PearlJam.mp3"
+  },
+  {
+    "titulo": "Goodbye",
+    "artista": "Arcade Icon",
+    "arquivo": "musicas/Goodbye-ArcadeIcon.mp3"
+  },
+  {
+    "titulo": "Highway to Hell",
+    "artista": "AC/DC",
+    "arquivo": "musicas/Highway-to-Hell-ACDC.mp3"
+  },
+  {
+    "titulo": "Lola Montez",
+    "artista": "Volbeat",
+    "arquivo": "musicas/Lola-Montez-Volbeat.mp3"
+  },
+  {
+    "titulo": "Wonderwall",
+    "artista": "Oasis",
+    "arquivo": "musicas/Wonderwall-Oasis.mp3"
+  }
+]

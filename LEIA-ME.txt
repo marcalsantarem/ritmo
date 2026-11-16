@@ -16,4 +16,8 @@ Observações:
 - A música precisa estar no app Arquivos do iPhone (ou no iCloud Drive).
   Músicas do Apple Music/Spotify não aparecem para seleção.
 - Em iOS anterior ao 17, deixe a chave lateral fora do modo silencioso.
-- Fones Bluetooth atrasam o som; para testar, prefira o alto-falante ou fone com fio.
+- Fones Bluetooth atrasam o som; use o controle "Sincronia" no menu (ou prefira o alto-falante / fone com fio).
+
+Biblioteca interna (pasta musicas/):
+- Coloque arquivos .mp3 ou .m4a dentro da pasta "musicas".
+- No Windows, execute .\atualizar-musicas.ps1 no PowerShell para atualizar o musicas.json automaticamente.
