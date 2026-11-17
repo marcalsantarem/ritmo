@@ -77,10 +77,13 @@
   .song-info{flex:1;min-width:0}
   .song-title{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .song-sub{font-size:12px;color:#929abc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-  .song-right{text-align:right;flex-shrink:0}
+  .song-right{text-align:right;flex-shrink:0;min-width:74px}
   .song-bpm{font-family:ui-monospace,SFMono-Regular,monospace;font-size:13px;font-weight:800;color:#9aa3c8}
+  .song-bpm.has-best{color:#ffe270}
   .song-card.active .song-bpm{color:#4caf7a}
-  .song-bpm-lbl{font-size:10px;color:#6e7698;text-transform:uppercase;letter-spacing:0.05em}
+  .song-card.active .song-bpm.has-best{color:#ffe270}
+  .song-bpm-lbl{font-size:10px;color:#6e7698;text-transform:uppercase;letter-spacing:0.05em;margin-top:2px}
+  .song-bpm-lbl.has-best{color:#aeb6d6;font-weight:700}
 
   /* Dificuldades temáticas */
   #diffGroup{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
@@ -237,14 +240,42 @@ const cv = $('c'), g = cv.getContext('2d');
 let W = 400, H = 560, LW = 100, HIT_Y = 470, RAD = 22;
 
 const DIFFS = {
-  easy:   { label: 'Fácil',   color: '#4caf7a', fall: 2.1, window: 0.24, mult: 1.65, bias: 0.080, subdiv: 1, snap: 0.35, beatTol: 0.24, minGapFactor: 0.85, minGapFloor: 0.42 },
-  medium: { label: 'Médio',   color: '#e6c84a', fall: 1.8, window: 0.21, mult: 1.38, bias: 0.055, subdiv: 2, snap: 0.25, beatTol: 0.28, minGapFactor: 0.45, minGapFloor: 0.26 },
-  hard:   { label: 'Difícil', color: '#e05a5a', fall: 1.5, window: 0.18, mult: 1.18, bias: 0.035, subdiv: 4, snap: 0.15, beatTol: 0.34, minGapFactor: 0.22, minGapFloor: 0.15 }
+  easy:   { label: 'Fácil',   color: '#4caf7a', fall: 2.05, window: 0.24, mult: 1.48, bias: 0.055, subdiv: 2, snap: 0.14, beatTol: 0.28, minGapFactor: 0.72, minGapFloor: 0.38, contourGain: 0.65 },
+  medium: { label: 'Médio',   color: '#e6c84a', fall: 1.75, window: 0.21, mult: 1.24, bias: 0.036, subdiv: 2, snap: 0.11, beatTol: 0.34, minGapFactor: 0.42, minGapFloor: 0.22, contourGain: 0.90 },
+  hard:   { label: 'Difícil', color: '#e05a5a', fall: 1.45, window: 0.18, mult: 1.05, bias: 0.022, subdiv: 4, snap: 0.08, beatTol: 0.42, minGapFactor: 0.21, minGapFloor: 0.115, contourGain: 1.15 }
 };
 
 let diffKey = 'hard';
 let latencyMs = Number(localStorage.getItem('ritmo_lat_ms') || 0);
 if (Number.isNaN(latencyMs)) latencyMs = 0;
+
+const BEST_STORAGE_KEY = 'ritmo_best_scores_v1';
+let bestScores = {};
+try {
+  bestScores = JSON.parse(localStorage.getItem(BEST_STORAGE_KEY) || '{}') || {};
+} catch (e) { bestScores = {}; }
+
+function getBestRecord(trackId, diff = diffKey) {
+  if (!trackId) return null;
+  return bestScores[`${trackId}__${diff}`] || null;
+}
+
+function saveBestRecord(trackId, diff, sc, acc, comboMax) {
+  if (!trackId || sc <= 0) return false;
+  const k = `${trackId}__${diff}`;
+  const prev = bestScores[k];
+  const isNew = !prev || sc > prev.score || (sc === prev.score && acc > (prev.acc || 0));
+  if (isNew) {
+    bestScores[k] = {
+      score: sc,
+      acc: acc,
+      maxCombo: Math.max(comboMax, prev ? prev.maxCombo || 0 : 0),
+      ts: Date.now()
+    };
+    try { localStorage.setItem(BEST_STORAGE_KEY, JSON.stringify(bestScores)); } catch (e) {}
+  }
+  return isNew;
+}
 
 const COLORS = ['#4caf7a', '#e05a5a', '#e6c84a', '#4a90e2'];
 const KEYS = ['d', 'f', 'j', 'k'];
@@ -252,6 +283,7 @@ const DISC_COLORS = ['#4caf7a', '#4a90e2', '#e6c84a', '#e05a5a', '#9b72ff'];
 
 let ctx, buffer, source, notes = [], startAt = 0, playing = false, paused = false, wake = null;
 let score = 0, combo = 0, maxCombo = 0, hits = 0, misses = 0, detectedBpm = 0, busy = false;
+let currentTrack = null;
 let lastFrame = performance.now();
 
 const flash = [0, 0, 0, 0], receptorPop = [0, 0, 0, 0], stringVib = [0, 0, 0];
@@ -293,121 +325,449 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
 }
 
-// Gera as notas: mistura estéreo, separa em 3 bandas (grave/médio/agudo), estima o BPM e alinha ao pulso
-function makeNotes(buf, key = diffKey) {
-  const cfg = DIFFS[key];
+// Pipeline MIR / DSP inspirado em Guitar Flash, Beatstar e Clone Hero:
+// 1) Banco de 8 filtros musicais por oitava + separação Estéreo Mid/Side (destaca guitarras/bateria e reduz vogais sustentadas da voz)
+// 2) Detecção combinada de ataques percussivos (bumbo, caixa, chimbal), palhetadas de guitarra/baixo e fluxo de mudança de nota (subidas/descidas)
+// 3) Rastreamento dinâmico de batidas (Ellis DP Beat Tracker) que acompanha variações reais de tempo da banda
+// 4) Mapeamento de pistas guiado pelo contorno melódico (subidas 0→1→2→3, descidas 3→2→1→0) e timbres da bateria
+function analyzeAudio(buf) {
+  if (buf._ritmoAnalysis) return buf._ritmoAnalysis;
+
   const ch0 = buf.getChannelData(0);
   const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : null;
-  const sr = buf.sampleRate, hop = 512, n = Math.floor(ch0.length / hop);
+  const sr = buf.sampleRate;
+  const hop = Math.max(256, Math.round(sr * 0.01)); // ~10 ms por frame (~100 fps)
+  const n = Math.floor(ch0.length / hop);
   const fps = sr / hop;
 
-  const a1 = 1 - Math.exp(-2 * Math.PI * 160 / sr);
-  const a2 = 1 - Math.exp(-2 * Math.PI * 2200 / sr);
-  let lp1a = 0, lp1b = 0, lp2a = 0, lp2b = 0;
+  // 7 frequências de corte dividindo o espectro em 8 sub-bandas musicais:
+  // B0: <105Hz (Bumbo/Sub), B1: 105-220Hz (Baixo/Guitarra grave), B2: 220-440Hz (Riff base/Corpo caixa),
+  // B3: 440-880Hz (Guitarra média/Melodia), B4: 880-1760Hz (Solo/Agudos guitarra),
+  // B5: 1760-3520Hz (Ataque de palheta/Esteira caixa), B6: 3520-6800Hz (Chimbal/Brilho), B7: >6800Hz (Pratos)
+  const cutoffs = [105, 220, 440, 880, 1760, 3520, 6800];
+  const alpha = cutoffs.map(fc => 1 - Math.exp(-2 * Math.PI * fc / sr));
+  let s0a = 0, s0b = 0, s1a = 0, s1b = 0, s2a = 0, s2b = 0, s3a = 0, s3b = 0;
+  let s4a = 0, s4b = 0, s5a = 0, s5b = 0, s6a = 0, s6b = 0;
+  let sideLp = 0, sideHp = 0;
+  const aSideLow = alpha[1], aSideHigh = alpha[5];
 
-  const eL = new Float32Array(n), eM = new Float32Array(n), eH = new Float32Array(n), rmsAll = new Float32Array(n);
+  const E = Array.from({ length: 8 }, () => new Float32Array(n));
+  const linH = Array.from({ length: 5 }, () => new Float32Array(n)); // energia harmônica linear B1..B5
+  const rmsAll = new Float32Array(n);
+  const instWeight = new Float32Array(n);
+  const rawPitch = new Float32Array(n);
+  const pitch = new Float32Array(n);
+
+  let prevHarmSample = 0;
   for (let i = 0; i < n; i++) {
-    let sL = 0, sM = 0, sH = 0, sAll = 0;
+    let e0 = 0, e1 = 0, e2 = 0, e3 = 0, e4 = 0, e5 = 0, e6 = 0, e7 = 0;
+    let eAll = 0, eSide = 0, eMidHarm = 0, zc = 0;
+
     for (let j = i * hop, end = j + hop; j < end; j++) {
-      const x = ch1 ? 0.5 * (ch0[j] + ch1[j]) : ch0[j];
-      lp1a += a1 * (x - lp1a); lp1b += a1 * (lp1a - lp1b);
-      lp2a += a2 * (x - lp2a); lp2b += a2 * (lp2a - lp2b);
-      const low = lp1b, mid = lp2b - lp1b, high = x - lp2b;
-      sL += low * low; sM += mid * mid; sH += high * high; sAll += x * x;
+      const L = ch0[j], R = ch1 ? ch1[j] : L;
+      const x = 0.5 * (L + R);
+      const side = ch1 ? 0.5 * (L - R) : 0;
+
+      s0a += alpha[0] * (x - s0a); s0b += alpha[0] * (s0a - s0b);
+      s1a += alpha[1] * (x - s1a); s1b += alpha[1] * (s1a - s1b);
+      s2a += alpha[2] * (x - s2a); s2b += alpha[2] * (s2a - s2b);
+      s3a += alpha[3] * (x - s3a); s3b += alpha[3] * (s3a - s3b);
+      s4a += alpha[4] * (x - s4a); s4b += alpha[4] * (s4a - s4b);
+      s5a += alpha[5] * (x - s5a); s5b += alpha[5] * (s5a - s5b);
+      s6a += alpha[6] * (x - s6a); s6b += alpha[6] * (s6a - s6b);
+
+      const b0 = s0b;
+      const b1 = s1b - s0b;
+      const b2 = s2b - s1b;
+      const b3 = s3b - s2b;
+      const b4 = s4b - s3b;
+      const b5 = s5b - s4b;
+      const b6 = s6b - s5b;
+      const b7 = x - s6b;
+
+      e0 += b0 * b0; e1 += b1 * b1; e2 += b2 * b2; e3 += b3 * b3;
+      e4 += b4 * b4; e5 += b5 * b5; e6 += b6 * b6; e7 += b7 * b7;
+      eAll += x * x;
+
+      // Canal Side filtrado na região de guitarras/instrumentos (220-3520 Hz)
+      sideLp += aSideHigh * (side - sideLp);
+      sideHp += aSideLow * (sideLp - sideHp);
+      const sideInst = sideLp - sideHp;
+      eSide += sideInst * sideInst;
+
+      const harm = b1 + b2 + b3 + 0.7 * b4;
+      eMidHarm += harm * harm;
+      if ((harm >= 0) !== (prevHarmSample >= 0)) zc++;
+      prevHarmSample = harm;
     }
-    eL[i] = Math.log1p(100 * Math.sqrt(sL / hop));
-    eM[i] = Math.log1p(100 * Math.sqrt(sM / hop));
-    eH[i] = Math.log1p(100 * Math.sqrt(sH / hop));
-    rmsAll[i] = Math.sqrt(sAll / hop);
+
+    const r0 = Math.sqrt(e0 / hop), r1 = Math.sqrt(e1 / hop), r2 = Math.sqrt(e2 / hop), r3 = Math.sqrt(e3 / hop);
+    const r4 = Math.sqrt(e4 / hop), r5 = Math.sqrt(e5 / hop), r6 = Math.sqrt(e6 / hop), r7 = Math.sqrt(e7 / hop);
+    linH[0][i] = r1; linH[1][i] = r2; linH[2][i] = r3; linH[3][i] = r4; linH[4][i] = r5;
+
+    E[0][i] = Math.log1p(140 * r0);
+    E[1][i] = Math.log1p(140 * r1);
+    E[2][i] = Math.log1p(140 * r2);
+    E[3][i] = Math.log1p(140 * r3);
+    E[4][i] = Math.log1p(140 * r4);
+    E[5][i] = Math.log1p(140 * r5);
+    E[6][i] = Math.log1p(140 * r6);
+    E[7][i] = Math.log1p(140 * r7);
+    rmsAll[i] = Math.sqrt(eAll / hop);
+
+    // Peso instrumental: guitarras/teclados têm forte imagem estéreo (Side) ou harmônicos graves/agudos de palheta,
+    // enquanto a voz principal fica centralizada em B3/B4
+    const sideRatio = ch1 ? Math.sqrt(eSide / (eMidHarm + 1e-7)) : 0.35;
+    instWeight[i] = Math.min(1.45, 0.85 + 0.80 * sideRatio);
+
+    // Altura tonal (pitch contínuo em oitavas): combina centroide das bandas harmônicas B1..B5 + ZCR harmônico
+    const hSum = r1 + r2 + r3 + r4 + 0.75 * r5 + 1e-6;
+    const specCentroid = (1.0 * r1 + 2.0 * r2 + 3.0 * r3 + 4.0 * r4 + 5.0 * 0.75 * r5) / hSum;
+    const f0 = Math.max(65, Math.min(1800, (zc * fps) * 0.5));
+    const zcrOct = Math.log2(f0 / 65); // 65Hz (C2) = 0, 130Hz = 1, 260Hz = 2, 520Hz = 3, 1040Hz = 4
+    rawPitch[i] = 0.64 * specCentroid + 0.36 * zcrOct;
   }
 
-  const fL = new Float32Array(n), fM = new Float32Array(n), fH = new Float32Array(n), odf = new Float32Array(n);
-  for (let i = 1; i < n; i++) {
-    fL[i] = Math.max(0, eL[i] - eL[i - 1]);
-    fM[i] = Math.max(0, eM[i] - eM[i - 1]);
-    fH[i] = Math.max(0, eH[i] - eH[i - 1]);
-    odf[i] = 1.25 * fL[i] + 1.0 * fM[i] + 0.75 * fH[i];
+  // Suavização leve de 30ms na curva de pitch para eliminar jitter de fase
+  for (let i = 0; i < n; i++) {
+    const p0 = rawPitch[Math.max(0, i - 1)];
+    const p1 = rawPitch[i];
+    const p2 = rawPitch[Math.min(n - 1, i + 1)];
+    pitch[i] = 0.25 * p0 + 0.50 * p1 + 0.25 * p2;
   }
 
-  // Estimativa de BPM por autocorrelação (70–175 BPM)
-  const lagMin = Math.max(4, Math.floor(fps * 60 / 175));
-  const lagMax = Math.min(Math.floor(n / 3), Math.ceil(fps * 60 / 70));
-  const winStart = Math.floor(n * 0.1);
-  const winEnd = Math.min(n - lagMax - 1, winStart + Math.floor(fps * 60));
-  let bestLag = Math.round(fps * 0.5), bestCorr = -1;
+  const odf = new Float32Array(n);
+  const drumOdf = new Float32Array(n);
+  const contourOdf = new Float32Array(n);
+  const frameKind = new Uint8Array(n); // 0=guitar/melody, 1=kick, 2=snare, 3=hat
+
+  for (let i = 3; i < n; i++) {
+    const df0 = Math.max(0, E[0][i] - (0.65 * E[0][i - 1] + 0.35 * E[0][i - 2]));
+    const df1 = Math.max(0, E[1][i] - (0.65 * E[1][i - 1] + 0.35 * E[1][i - 2]));
+    const df2 = Math.max(0, E[2][i] - (0.65 * E[2][i - 1] + 0.35 * E[2][i - 2]));
+    const df3 = Math.max(0, E[3][i] - (0.65 * E[3][i - 1] + 0.35 * E[3][i - 2]));
+    const df4 = Math.max(0, E[4][i] - (0.65 * E[4][i - 1] + 0.35 * E[4][i - 2]));
+    const df5 = Math.max(0, E[5][i] - (0.65 * E[5][i - 1] + 0.35 * E[5][i - 2]));
+    const df6 = Math.max(0, E[6][i] - (0.65 * E[6][i - 1] + 0.35 * E[6][i - 2]));
+    const df7 = Math.max(0, E[7][i] - (0.65 * E[7][i - 1] + 0.35 * E[7][i - 2]));
+
+    // 1. Bateria: Bumbo (Kick), Caixa (Snare = corpo médio + esteira aguda simultânea) e Chimbal/Pratos
+    const kick = 1.50 * df0 + 0.85 * df1;
+    const snareCoinc = (df2 + df3 > 0.045 && df5 + df6 > 0.045) ? 1.38 : 0.82;
+    const snare = (0.55 * df2 + 0.45 * df3 + 0.90 * df5 + 0.65 * df6) * snareCoinc;
+    const hat = 1.05 * df6 + 1.20 * df7;
+
+    // 2. Ataque de guitarra / baixo / teclado (reforçado quando há transiente de palheta em B4..B6)
+    const pickAttack = (df4 + df5 + df6 > 0.05) ? 1.26 : 0.92;
+    // Penaliza vogais lentas de voz centralizada quando não há ataque percussivo nem abertura estéreo
+    const vocalVeto = (instWeight[i] < 0.96 && df0 + df1 + df5 + df6 < 0.04) ? 0.58 : 1.0;
+    const guitar = (1.10 * df1 + 1.35 * df2 + 1.25 * df3 + 1.20 * df4 + 0.85 * df5) * instWeight[i] * pickAttack * vocalVeto;
+
+    // 3. Fluxo harmônico de mudança de nota ("Subidas e Descidas"):
+    // Detecta quando o instrumento muda de nota (energia migra entre B1..B5) mesmo se o volume total for constante
+    const sumNow = linH[0][i] + linH[1][i] + linH[2][i] + linH[3][i] + linH[4][i] + 1e-6;
+    const sumPrev = linH[0][i - 3] + linH[1][i - 3] + linH[2][i - 3] + linH[3][i - 3] + linH[4][i - 3] + 1e-6;
+    let profileShift = 0;
+    for (let b = 0; b < 5; b++) {
+      profileShift += Math.abs(linH[b][i] / sumNow - linH[b][i - 3] / sumPrev);
+    }
+    const pitchDelta = Math.abs(pitch[i] - pitch[i - 3]);
+    const harmConf = Math.min(1.15, Math.max(0, (E[1][i] + E[2][i] + E[3][i] + E[4][i]) * 0.14));
+    const contour = Math.max(0, (profileShift * 0.75 + pitchDelta * 0.85) - 0.10) * harmConf * instWeight[i] * vocalVeto;
+
+    drumOdf[i] = 1.25 * kick + 1.20 * snare + 0.65 * hat;
+    contourOdf[i] = contour;
+    odf[i] = drumOdf[i] + 1.30 * guitar + 1.05 * contour;
+
+    // Classifica o evento predominante do frame para auxiliar no mapeamento das cordas
+    const gScore = guitar + contour * 1.2;
+    if (kick * 1.25 >= gScore && kick >= snare && kick >= hat) frameKind[i] = 1;
+    else if (snare * 1.15 >= gScore && snare >= kick && snare >= hat) frameKind[i] = 2;
+    else if (hat * 1.15 > gScore && hat > kick && hat > snare) frameKind[i] = 3;
+    else frameKind[i] = 0;
+  }
+
+  // Estimativa de BPM por autocorrelação perceptual (74–172 BPM) com verificação de harmônicos (meio-tempo / dobro)
+  const pulse = new Float32Array(n);
+  for (let i = 0; i < n; i++) pulse[i] = 0.62 * drumOdf[i] + 0.38 * odf[i];
+
+  const lagMin = Math.max(4, Math.floor(fps * 60 / 172));
+  const lagMax = Math.min(Math.floor(n / 3), Math.ceil(fps * 60 / 74));
+  const winStart = Math.floor(n * 0.08);
+  const winEnd = Math.min(n - lagMax * 2 - 2, winStart + Math.floor(fps * 75));
+  const corr = new Float32Array(lagMax + 1);
+
   for (let lag = lagMin; lag <= lagMax; lag++) {
     let sum = 0;
-    for (let i = winStart; i < winEnd; i += 2) sum += odf[i] * odf[i + lag];
+    for (let i = winStart; i < winEnd; i += 2) {
+      sum += pulse[i] * pulse[i + lag] + 0.5 * pulse[i] * pulse[i + lag * 2];
+    }
     const bpm = 60 * fps / lag;
-    const prior = 1 - 0.15 * Math.abs(bpm - 120) / 60;
-    const val = sum * prior;
-    if (val > bestCorr) { bestCorr = val; bestLag = lag; }
+    const prior = Math.exp(-0.5 * Math.pow((bpm - 122) / 38, 2));
+    corr[lag] = sum * (0.72 + 0.28 * prior);
+  }
+
+  let bestLag = Math.round(fps * 0.5), bestCorr = -1;
+  for (let lag = lagMin; lag <= lagMax; lag++) {
+    if (corr[lag] > bestCorr) { bestCorr = corr[lag]; bestLag = lag; }
   }
   const beatSec = bestLag / fps;
-  detectedBpm = Math.round(60 / beatSec);
+  const bpmEst = Math.round(60 / beatSec);
 
-  let bestPhase = 0, bestPhaseScore = -1;
-  for (let p = 0; p < bestLag; p++) {
-    let sum = 0;
-    for (let i = p; i < n; i += bestLag) sum += odf[i];
-    if (sum > bestPhaseScore) { bestPhaseScore = sum; bestPhase = p; }
+  // Ellis Dynamic Programming Beat Tracker: encontra a sequência exata de batidas acompanhando variações da banda
+  const backlink = new Int32Array(n).fill(-1);
+  const cumScore = new Float32Array(n);
+  const minStep = Math.max(lagMin, Math.round(bestLag * 0.82));
+  const maxStep = Math.min(lagMax + 10, Math.round(bestLag * 1.18));
+
+  // Suaviza o pulso com janela de ~30ms para o rastreador de batidas
+  let meanPulse = 0;
+  for (let i = 0; i < n; i++) meanPulse += pulse[i];
+  meanPulse = meanPulse / Math.max(1, n);
+  const tightness = 3.2 * meanPulse;
+
+  for (let i = 0; i < n; i++) {
+    const localP = 0.25 * pulse[Math.max(0, i - 1)] + 0.50 * pulse[i] + 0.25 * pulse[Math.min(n - 1, i + 1)];
+    let bestPrev = -1, maxScore = localP;
+    if (i >= minStep) {
+      const hi = Math.min(i, maxStep);
+      for (let lag = minStep; lag <= hi; lag++) {
+        const prevIdx = i - lag;
+        const diff = Math.log(lag / bestLag);
+        const cand = cumScore[prevIdx] + localP - tightness * diff * diff;
+        if (cand > maxScore) { maxScore = cand; bestPrev = prevIdx; }
+      }
+    }
+    cumScore[i] = maxScore;
+    backlink[i] = bestPrev;
   }
-  const phaseSec = bestPhase / fps;
 
-  const R = 14, winArr = new Float32Array(2 * R + 1);
+  let endBeat = n - 1, endBest = -1;
+  for (let i = Math.max(0, n - maxStep * 2); i < n; i++) {
+    if (cumScore[i] > endBest) { endBest = cumScore[i]; endBeat = i; }
+  }
+  const beatList = [];
+  for (let cur = endBeat; cur >= 0; cur = backlink[cur]) beatList.push(cur);
+  beatList.reverse();
+  if (beatList.length < 2) {
+    beatList.length = 0;
+    for (let f = 0; f < n; f += bestLag) beatList.push(f);
+  }
+
+  // Calcula a fase contínua de batida em cada frame (0.0 = cabeça do tempo, 0.5 = contratempo/colcheia)
+  const beatPhase = new Float32Array(n);
+  const localBeatSec = new Float32Array(n).fill(beatSec);
+  let bIdx = 0;
+  for (let i = 0; i < n; i++) {
+    while (bIdx < beatList.length - 2 && i >= beatList[bIdx + 1]) bIdx++;
+    const b0 = beatList[bIdx];
+    const b1 = beatList[Math.min(beatList.length - 1, bIdx + 1)];
+    const span = Math.max(minStep, b1 - b0);
+    localBeatSec[i] = span / fps;
+    const rawPh = (i - b0) / span;
+    beatPhase[i] = ((rawPh % 1) + 1) % 1;
+  }
+
+  const result = { n, fps, beatSec, bpm: bpmEst, rmsAll, odf, drumOdf, contourOdf, pitch, frameKind, beatPhase, localBeatSec };
+  buf._ritmoAnalysis = result;
+  return result;
+}
+
+function makeNotes(buf, key = diffKey) {
+  const cfg = DIFFS[key];
+  const an = analyzeAudio(buf);
+  const { n, fps, beatSec, bpm, rmsAll, odf, drumOdf, contourOdf, pitch, frameKind, beatPhase, localBeatSec } = an;
+  detectedBpm = bpm;
+
+  // Janela deslizante de ~1.2s para limiar adaptativo local
+  const R = Math.round(fps * 0.60);
+  const winArr = new Float32Array(2 * R + 1);
   const candidates = [];
-  for (let i = 1; i < n - 1; i++) {
-    if (rmsAll[i] < 0.012) continue;
-    if (odf[i] < odf[i - 1] || odf[i] < odf[i + 1]) continue;
-    let k = 0;
-    for (let j = Math.max(0, i - R); j <= Math.min(n - 1, i + R); j++) winArr[k++] = odf[j];
+
+  for (let i = 3; i < n - 3; i++) {
+    if (rmsAll[i] < 0.008) continue;
+    const val = odf[i] + (cfg.contourGain - 1) * contourOdf[i];
+    const prevVal = odf[i - 1] + (cfg.contourGain - 1) * contourOdf[i - 1];
+    const nextVal = odf[i + 1] + (cfg.contourGain - 1) * contourOdf[i + 1];
+    if (val < prevVal || val < nextVal) continue;
+
+    let k = 0, sumWin = 0;
+    const j0 = Math.max(0, i - R), j1 = Math.min(n - 1, i + R);
+    for (let j = j0; j <= j1; j += 2) {
+      const v = odf[j];
+      winArr[k++] = v;
+      sumWin += v;
+    }
     const slice = winArr.subarray(0, k).sort();
     const med = slice[k >> 1];
-    const thresh = cfg.mult * med + cfg.bias;
-    if (odf[i] <= thresh) continue;
+    const mean = sumWin / Math.max(1, k);
+    const thresh = cfg.mult * (0.65 * med + 0.35 * mean) + cfg.bias;
+    if (val <= thresh) continue;
 
-    const rawT = i / fps;
-    const step = beatSec / cfg.subdiv;
-    const gridIdx = Math.round((rawT - phaseSec) / step);
-    const gridT = phaseSec + gridIdx * step;
-    const distNorm = Math.abs(rawT - gridT) / step;
-    const isStrongSyncopation = odf[i] > thresh * 1.65;
-    if (distNorm > cfg.beatTol && !isStrongSyncopation) continue;
+    // Avaliação métrica local em relação às batidas reais da banda
+    const ph = beatPhase[i];
+    const d1 = Math.min(ph, 1 - ph); // distância para a cabeça do tempo (1/1)
+    const d2 = Math.min(d1, Math.abs(ph - 0.5)); // colcheia (1/2)
+    const d3 = Math.min(Math.abs(ph - 1 / 3), Math.abs(ph - 2 / 3)); // tercina (1/3)
+    const d4 = Math.min(d2, Math.abs(ph - 0.25), Math.abs(ph - 0.75), d3); // semicolcheia/tercina
 
-    const t = distNorm <= cfg.beatTol ? rawT * (1 - cfg.snap) + gridT * cfg.snap : rawT;
-    if (t < 0.15) continue;
-    const bright = (0.0 * fL[i] + 1.5 * fM[i] + 3.0 * fH[i]) / (fL[i] + fM[i] + fH[i] + 1e-6);
-    candidates.push({ t, str: odf[i], bright, hit: false, missed: false });
+    let metricBonus = 1.0;
+    let subDist = d4;
+    let nearestSubPhase = ph;
+
+    if (d1 <= 0.14) {
+      metricBonus = 1.32;
+      subDist = d1;
+      nearestSubPhase = ph > 0.5 ? 1 : 0;
+    } else if (d2 <= 0.14) {
+      metricBonus = key === 'easy' ? 1.12 : 1.22;
+      subDist = d2;
+      nearestSubPhase = 0.5;
+    } else if (cfg.subdiv >= 4 && d4 <= 0.12) {
+      metricBonus = 1.12;
+      subDist = d4;
+      const subs = [0.25, 1 / 3, 2 / 3, 0.75];
+      nearestSubPhase = subs.reduce((a, b) => Math.abs(ph - b) < Math.abs(ph - a) ? b : a, 0.25);
+    }
+
+    const strengthRatio = val / (thresh + 1e-6);
+    const isStrongAccent = strengthRatio > (key === 'easy' ? 1.55 : key === 'medium' ? 1.38 : 1.20);
+    const activeGridDist = key === 'easy' ? d2 : d4;
+    if (activeGridDist > cfg.beatTol * 0.5 && !isStrongAccent) continue;
+
+    // Interpolação parabólica sub-frame para cravar o instante exato do transiente acústico
+    const denom = prevVal - 2 * val + nextVal;
+    const fracOffset = Math.abs(denom) > 1e-6 ? Math.max(-0.45, Math.min(0.45, 0.5 * (prevVal - nextVal) / denom)) : 0;
+    const rawT = (i + fracOffset) / fps;
+
+    // Micro-ajuste suave à subdivisão local (máximo ±10 ms) sem tirar a nota do som real
+    const phaseErrSec = (nearestSubPhase - ph) * localBeatSec[i];
+    const nudge = Math.abs(phaseErrSec) <= 0.032 ? phaseErrSec * cfg.snap : 0;
+    const t = rawT + nudge;
+    if (t < 0.18) continue;
+
+    // Lê o pitch ~20ms APÓS o ataque inicial para capturar a nota real da corda/voz (e não o ruído da palhetada)
+    const pitchFrame = Math.min(n - 1, i + 2);
+    const notePitch = 0.65 * pitch[pitchFrame] + 0.35 * pitch[Math.min(n - 1, i + 3)];
+
+    candidates.push({
+      t,
+      salience: val * metricBonus,
+      pitch: notePitch,
+      kind: frameKind[i],
+      onBeat: d1 <= 0.14,
+      hit: false,
+      missed: false
+    });
   }
 
+  // Filtragem de densidade mínima por dificuldade (preservando sempre a nota de maior saliência musical)
   const minGap = Math.max(cfg.minGapFloor, beatSec * cfg.minGapFactor);
   const out = [];
   for (const c of candidates) {
     const prev = out[out.length - 1];
-    if (!prev || c.t - prev.t >= minGap) out.push(c);
-    else if (c.str > prev.str * 1.15) out[out.length - 1] = c;
+    if (!prev || c.t - prev.t >= minGap) {
+      out.push(c);
+    } else if (c.salience > prev.salience * 1.08) {
+      out[out.length - 1] = c;
+    }
   }
 
-  const sorted = out.map(o => o.bright).sort((a, b) => a - b);
-  const q = p => sorted[Math.floor(sorted.length * p)] ?? 0;
-  const q1 = q(0.25), q2 = q(0.5), q3 = q(0.75);
-  let repeatCount = 0;
+  if (!out.length) return out;
+
+  // Mapeamento de Pistas guiado por Contorno Melódico ("Subidas e Descidas") + Timbre Instrumental
+  const sortedPitches = out.map(o => o.pitch).slice().sort((a, b) => a - b);
+  const qPitch = p => sortedPitches[Math.min(sortedPitches.length - 1, Math.floor(sortedPitches.length * p))] ?? 0;
+  const gMin = qPitch(0.08), gMax = Math.max(gMin + 0.25, qPitch(0.92));
+
+  // Calcula a sensibilidade a degraus de nota (subida/descida) com base na variação real da música
+  const pitchDiffs = [];
+  for (let i = 1; i < out.length; i++) {
+    if (out[i].t - out[i - 1].t < 0.85) pitchDiffs.push(Math.abs(out[i].pitch - out[i - 1].pitch));
+  }
+  pitchDiffs.sort((a, b) => a - b);
+  const stepThresh = Math.max(0.045, (pitchDiffs[Math.floor(pitchDiffs.length * 0.38)] ?? 0.08) * 0.85);
+
+  let sameLaneCount = 0;
+  let lastDir = 1;
+
   for (let i = 0; i < out.length; i++) {
     const o = out[i];
-    let lane = o.bright < q1 ? 0 : o.bright < q2 ? 1 : o.bright < q3 ? 2 : 3;
+
+    // Janela de frase local (±6 notas, ~2.5s) para normalizar a altura da nota dentro do riff/frase atual
+    let lMin = o.pitch, lMax = o.pitch;
+    for (let j = Math.max(0, i - 6); j <= Math.min(out.length - 1, i + 6); j++) {
+      if (Math.abs(out[j].t - o.t) <= 3.0) {
+        if (out[j].pitch < lMin) lMin = out[j].pitch;
+        if (out[j].pitch > lMax) lMax = out[j].pitch;
+      }
+    }
+    const localNorm = lMax - lMin > 0.12 ? (o.pitch - lMin) / (lMax - lMin) : 0.5;
+    const globalNorm = Math.max(0, Math.min(1, (o.pitch - gMin) / (gMax - gMin)));
+    let pos = (0.65 * localNorm + 0.35 * globalNorm) * 3.99;
+
+    // Âncoras naturais de bateria quando o evento é predominantemente percussivo
+    if (o.kind === 1) pos = Math.min(1.6, pos * 0.55); // Bumbo -> cordas graves (0 ou 1)
+    else if (o.kind === 3) pos = Math.max(2.1, 1.4 + pos * 0.65); // Chimbal/Prato -> cordas agudas (2 ou 3)
+
+    let lane = Math.max(0, Math.min(3, Math.floor(pos)));
+
     if (i > 0) {
       const prev = out[i - 1];
       const dt = o.t - prev.t;
-      if (dt < 0.26 && Math.abs(lane - prev.lane) === 3 && Math.abs(o.bright - prev.bright) < 1.2) {
-        lane = lane > prev.lane ? 2 : 1;
+      const dp = o.pitch - prev.pitch;
+
+      if (dt <= 0.90) {
+        if (dp > stepThresh) {
+          // SUBIDA melódica / de guitarra: avança para a direita nas cordas
+          const bigJump = dp > stepThresh * 2.5 && pos - prev.lane >= 1.75;
+          if (prev.lane < 3) {
+            lane = Math.min(3, prev.lane + (bigJump ? 2 : 1));
+          } else {
+            // Já estava na corda 3 e a frase continua subindo: faz shift de oitava (volta para 1 ou 2) para continuar subindo
+            lane = (i + 1 < out.length && out[i + 1].pitch > o.pitch) ? 1 : 2;
+          }
+          lastDir = 1;
+        } else if (dp < -stepThresh) {
+          // DESCIDA melódica / de guitarra: avança para a esquerda nas cordas
+          const bigDrop = dp < -stepThresh * 2.5 && prev.lane - pos >= 1.75;
+          if (prev.lane > 0) {
+            lane = Math.max(0, prev.lane - (bigDrop ? 2 : 1));
+          } else {
+            // Já estava na corda 0 e a frase continua descendo: faz shift de oitava (vai para 2 ou 1)
+            lane = (i + 1 < out.length && out[i + 1].pitch < o.pitch) ? 2 : 1;
+          }
+          lastDir = -1;
+        } else {
+          // Mesma nota / batida sustentada
+          if (o.kind === 1) lane = prev.lane === 0 && dt < 0.22 ? 1 : 0;
+          else if (o.kind === 2) lane = prev.lane === 1 ? 2 : 1;
+          else if (o.kind === 3) lane = prev.lane === 3 && dt < 0.22 ? 2 : 3;
+          else lane = prev.lane;
+
+          // Em notas rápidas repetidas (<220ms), alterna entre cordas vizinhas (estilo palhetada alternada / rolo de bateria)
+          if (lane === prev.lane && dt < 0.22) {
+            const alt = prev.lane + lastDir;
+            lane = (alt >= 0 && alt <= 3) ? alt : (prev.lane > 0 ? prev.lane - 1 : 1);
+            lastDir = -lastDir;
+          }
+        }
       }
-      if (lane === prev.lane && dt < 0.32) {
-        repeatCount++;
-        if (repeatCount >= 2) { lane = lane === 3 ? 2 : lane + 1; repeatCount = 0; }
-      } else repeatCount = 0;
+
+      if (lane === prev.lane) {
+        sameLaneCount++;
+        if (sameLaneCount >= 2) {
+          lane = prev.lane === 3 ? 2 : prev.lane === 0 ? 1 : prev.lane + (pos >= prev.lane ? 1 : -1);
+          sameLaneCount = 0;
+        }
+      } else {
+        sameLaneCount = 0;
+      }
     }
-    o.lane = lane;
+
+    o.lane = Math.max(0, Math.min(3, lane));
   }
+
   return out;
 }
 
@@ -446,6 +806,7 @@ $('latVal').onclick = () => {
 function renderSongList() {
   const list = $('songList');
   list.innerHTML = '';
+  const cfg = DIFFS[diffKey];
   $('setlistCount').textContent = `Setlist · ${tracks.length} ${tracks.length === 1 ? 'faixa' : 'faixas'}`;
 
   if (!tracks.length) {
@@ -457,21 +818,25 @@ function renderSongList() {
   tracks.forEach((tr, idx) => {
     const active = idx === selectedIdx;
     const cached = trackCache.get(tr.id);
+    const best = getBestRecord(tr.id, diffKey);
     const color = DISC_COLORS[idx % DISC_COLORS.length];
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'song-card' + (active ? ' active' : '');
     const dur = cached ? ` · ${formatDur(cached.duration)}` : '';
-    const bpmText = cached && cached.bpm ? cached.bpm : '—';
+    const bpmInfo = cached && cached.bpm ? ` · ${cached.bpm} BPM` : '';
+    const rightTop = best ? `🏆 ${best.score.toLocaleString('pt-BR')}` : (cached && cached.bpm ? `${cached.bpm} BPM` : '—');
+    const rightSub = best ? `Recorde (${best.acc}%)` : `Sem nota · ${cfg.label}`;
+
     btn.innerHTML = `
       <div class="song-disc" style="background:${active ? `linear-gradient(135deg,${color},#151828)` : '#181b2e'}">${active ? '♪' : idx + 1}</div>
       <div class="song-info">
         <div class="song-title">${escapeHtml(tr.titulo)}</div>
-        <div class="song-sub">${escapeHtml(tr.artista || 'Biblioteca')}${dur}</div>
+        <div class="song-sub">${escapeHtml(tr.artista || 'Biblioteca')}${dur}${bpmInfo}</div>
       </div>
       <div class="song-right">
-        <div class="song-bpm">${bpmText}</div>
-        <div class="song-bpm-lbl">BPM</div>
+        <div class="song-bpm${best ? ' has-best' : ''}">${rightTop}</div>
+        <div class="song-bpm-lbl${best ? ' has-best' : ''}">${escapeHtml(rightSub)}</div>
       </div>`;
     btn.onclick = () => {
       if (busy) return;
@@ -491,12 +856,23 @@ function updateMenuInfo() {
   if (selectedIdx < 0 || !tracks[selectedIdx]) return;
   const tr = tracks[selectedIdx];
   const cached = trackCache.get(tr.id);
-  if (cached) {
-    $('setlistMeta').textContent = `${cached.bpm} BPM`;
-    $('menuStatus').textContent = `${tr.titulo} pronto · ${cfg.label}`;
+  const best = getBestRecord(tr.id, diffKey);
+  if (best) {
+    $('setlistMeta').textContent = `🏆 ${best.score.toLocaleString('pt-BR')} pts (${cfg.label})`;
+  } else if (cached) {
+    $('setlistMeta').textContent = `${cached.bpm} BPM · ${cfg.label}`;
   } else {
     $('setlistMeta').textContent = cfg.label;
-    $('menuStatus').textContent = `Selecionada: ${tr.titulo} — toque em Tocar`;
+  }
+
+  if (cached) {
+    $('menuStatus').textContent = best
+      ? `${tr.titulo} · Melhor em ${cfg.label}: ${best.score.toLocaleString('pt-BR')} pts (${best.acc}%)`
+      : `${tr.titulo} pronto · ${cfg.label}`;
+  } else {
+    $('menuStatus').textContent = best
+      ? `Selecionada: ${tr.titulo} · Recorde (${cfg.label}): ${best.score.toLocaleString('pt-BR')} pts`
+      : `Selecionada: ${tr.titulo} — toque em Tocar`;
   }
 }
 
@@ -505,6 +881,7 @@ document.querySelectorAll('#diffGroup .dbtn').forEach(btn => {
     if (busy) return;
     diffKey = btn.dataset.diff;
     document.querySelectorAll('#diffGroup .dbtn').forEach(b => b.classList.toggle('active', b === btn));
+    renderSongList();
     updateMenuInfo();
   };
 });
@@ -545,7 +922,7 @@ $('file').onchange = async ev => {
     const buf = await decode(await file.arrayBuffer());
     const tmpNotes = makeNotes(buf, diffKey);
     const title = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ');
-    const localId = 'local:custom';
+    const localId = 'local:' + file.name;
     trackCache.set(localId, { buffer: buf, bpm: detectedBpm, duration: buf.duration });
     const existing = tracks.findIndex(t => t.id === localId);
     const entry = { id: localId, titulo: title, artista: 'Arquivo do aparelho', arquivo: null };
@@ -553,7 +930,7 @@ $('file').onchange = async ev => {
     else tracks.unshift(entry);
     selectedIdx = tracks.findIndex(t => t.id === localId);
     renderSongList();
-    $('setlistMeta').textContent = `${detectedBpm} BPM`;
+    updateMenuInfo();
     $('menuStatus').textContent = `${tmpNotes.length} notas prontas (${DIFFS[diffKey].label}).`;
     $('startBtn').disabled = false;
   } catch (err) {
@@ -582,6 +959,7 @@ function stop() {
 
 function startPlayback(tr, buf, bpm) {
   stop();
+  currentTrack = tr;
   const cfg = DIFFS[diffKey];
   notes = makeNotes(buf, diffKey);
   buffer = buf;
@@ -620,7 +998,19 @@ function startPlayback(tr, buf, bpm) {
 
 function showResults(tr) {
   const acc = Math.round((hits / Math.max(1, hits + misses)) * 100);
-  $('resDiff').textContent = `Show Concluído · ${DIFFS[diffKey].label}`;
+  const isNew = saveBestRecord(tr.id, diffKey, score, acc, maxCombo);
+  const best = getBestRecord(tr.id, diffKey);
+  renderSongList();
+  updateMenuInfo();
+
+  if (isNew && score > 0) {
+    $('resDiff').textContent = `★ NOVO RECORDE! · ${DIFFS[diffKey].label} ★`;
+    $('resDiff').style.color = '#ffe270';
+  } else {
+    const bestTxt = best ? ` · Recorde: ${best.score.toLocaleString('pt-BR')}` : '';
+    $('resDiff').textContent = `Show Concluído · ${DIFFS[diffKey].label}${bestTxt}`;
+    $('resDiff').style.color = '#4caf7a';
+  }
   $('resSong').textContent = tr.titulo;
   $('resScore').textContent = score.toLocaleString('pt-BR');
   $('resAcc').textContent = `${acc}%`;
@@ -646,7 +1036,7 @@ $('startBtn').onclick = async () => {
       const res = await fetch(tr.arquivo);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const ab = await res.arrayBuffer();
-      $('menuStatus').textContent = `Analisando ritmo de "${tr.titulo}"...`;
+      $('menuStatus').textContent = `Mapeando instrumentos de "${tr.titulo}"...`;
       await unlock;
       const buf = await decode(ab);
       makeNotes(buf, diffKey);
@@ -684,9 +1074,14 @@ function togglePause() {
 $('pause').onclick = togglePause;
 
 function returnToMenu() {
+  if (currentTrack && score > 0) {
+    const acc = Math.round((hits / Math.max(1, hits + misses)) * 100);
+    saveBestRecord(currentTrack.id, diffKey, score, acc, maxCombo);
+  }
   stop();
   $('resultOverlay').classList.add('hidden');
   showScreen('menu');
+  renderSongList();
   updateMenuInfo();
 }
 $('backBtn').onclick = returnToMenu;

@@ -1,27 +1,172 @@
 [
-  {
-    "titulo": "Black",
-    "artista": "Pearl Jam",
-    "arquivo": "musicas/Black-PearlJam.mp3"
-  },
-  {
-    "titulo": "Goodbye",
-    "artista": "Arcade Icon",
-    "arquivo": "musicas/Goodbye-ArcadeIcon.mp3"
-  },
-  {
-    "titulo": "Highway to Hell",
-    "artista": "AC/DC",
-    "arquivo": "musicas/Highway-to-Hell-ACDC.mp3"
-  },
-  {
-    "titulo": "Lola Montez",
-    "artista": "Volbeat",
-    "arquivo": "musicas/Lola-Montez-Volbeat.mp3"
-  },
-  {
-    "titulo": "Wonderwall",
-    "artista": "Oasis",
-    "arquivo": "musicas/Wonderwall-Oasis.mp3"
-  }
+    {
+        "titulo":  "Alive",
+        "artista":  "Pearl Jam",
+        "arquivo":  "musicas/Alive-Pearl-Jam.mp3"
+    },
+    {
+        "titulo":  "Back In Black",
+        "artista":  "AC/DC",
+        "arquivo":  "musicas/Back-In-Black-ACDC.mp3"
+    },
+    {
+        "titulo":  "Best Of You",
+        "artista":  "Foo Fighters",
+        "arquivo":  "musicas/Best-Of-You-Foo-Fighters.mp3"
+    },
+    {
+        "titulo":  "Black",
+        "artista":  "Pearl Jam",
+        "arquivo":  "musicas/Black-PearlJam.mp3"
+    },
+    {
+        "titulo":  "Bohemian Rhapsody",
+        "artista":  "Queen",
+        "arquivo":  "musicas/Bohemian-Rhapsody-Queen.mp3"
+    },
+    {
+        "titulo":  "Can\u0027t Stop",
+        "artista":  "Red Hot Chili Peppers",
+        "arquivo":  "musicas/Cant-Stop-Red-Hot-Chili-Peppers.mp3"
+    },
+    {
+        "titulo":  "Dark Necessities",
+        "artista":  "Red Hot Chili Peppers",
+        "arquivo":  "musicas/Dark-Necessities-Red-Hot-Chili-Peppers.mp3"
+    },
+    {
+        "titulo":  "Don\u0027t Stop Believin\u0027",
+        "artista":  "Journey",
+        "arquivo":  "musicas/Dont-Stop-Believin-Journey.mp3"
+    },
+    {
+        "titulo":  "Flake",
+        "artista":  "Jack Johnson",
+        "arquivo":  "musicas/Flake-Jack-Johnson.mp3"
+    },
+    {
+        "titulo":  "Goodbye",
+        "artista":  "Arcade Icon",
+        "arquivo":  "musicas/Goodbye-ArcadeIcon.mp3"
+    },
+    {
+        "titulo":  "Hells Bells",
+        "artista":  "AC/DC",
+        "arquivo":  "musicas/Hells-Bells-ACDC.mp3"
+    },
+    {
+        "titulo":  "Highway to Hell",
+        "artista":  "AC/DC",
+        "arquivo":  "musicas/Highway-to-Hell-ACDC.mp3"
+    },
+    {
+        "titulo":  "Immigrant Song",
+        "artista":  "Led Zeppelin",
+        "arquivo":  "musicas/Immigrant-Song-Led-Zeppelin.mp3"
+    },
+    {
+        "titulo":  "Jeremy",
+        "artista":  "Pearl Jam",
+        "arquivo":  "musicas/Jeremy-Pearl-Jam.mp3"
+    },
+    {
+        "titulo":  "Last Kiss",
+        "artista":  "Pearl Jam",
+        "arquivo":  "musicas/Last-Kiss-Pearl-Jam.mp3"
+    },
+    {
+        "titulo":  "Lola Montez",
+        "artista":  "Volbeat",
+        "arquivo":  "musicas/Lola-Montez-Volbeat.mp3"
+    },
+    {
+        "titulo":  "My Hero",
+        "artista":  "Foo Fighters",
+        "arquivo":  "musicas/My-Hero-Foo-Fighters.mp3"
+    },
+    {
+        "titulo":  "Radio Ga Ga",
+        "artista":  "Queen",
+        "arquivo":  "musicas/Radio-Ga-Ga-Queen.mp3"
+    },
+    {
+        "titulo":  "Scar Tissue",
+        "artista":  "Red Hot Chili Peppers",
+        "arquivo":  "musicas/Scar-Tissue-Red-Hot-Chili-Peppers.mp3"
+    },
+    {
+        "titulo":  "Sirens",
+        "artista":  "Pearl Jam",
+        "arquivo":  "musicas/Sirens-Pearl-Jam.mp3"
+    },
+    {
+        "titulo":  "Stairway to Heaven",
+        "artista":  "Led Zeppelin",
+        "arquivo":  "musicas/Stairway-to-Heaven-Led-Zeppelin.mp3"
+    },
+    {
+        "titulo":  "The Adventures of Rain Dance Maggie",
+        "artista":  "Red Hot Chili Peppers",
+        "arquivo":  "musicas/The-Adventures-of-Rain-Dance-Maggie-Red-Hot-Chili-Peppers.mp3"
+    },
+    {
+        "titulo":  "The Pretender",
+        "artista":  "Foo Fighters",
+        "arquivo":  "musicas/The-Pretender-Foo-Fighters.mp3"
+    },
+    {
+        "titulo":  "The Zephyr Song",
+        "artista":  "Red Hot Chili Peppers",
+        "arquivo":  "musicas/The-Zephyr-Song-Red-Hot-Chili-Peppers.mp3"
+    },
+    {
+        "titulo":  "Times Like These",
+        "artista":  "Jack Johnson",
+        "arquivo":  "musicas/Times-Like-These-Jack-Johnson.mp3"
+    },
+    {
+        "titulo":  "T.N.T.",
+        "artista":  "AC/DC",
+        "arquivo":  "musicas/TNT-ACDC.mp3"
+    },
+    {
+        "titulo":  "Under Pressure",
+        "artista":  "Queen",
+        "arquivo":  "musicas/Under-Pressure-Queen.mp3"
+    },
+    {
+        "titulo":  "Under The Bridge",
+        "artista":  "Red Hot Chili Peppers",
+        "arquivo":  "musicas/Under-The-Bridge-Red-Hot-Chili-Peppers.mp3"
+    },
+    {
+        "titulo":  "Universally Speaking",
+        "artista":  "Red Hot Chili Peppers",
+        "arquivo":  "musicas/Universally-Speaking-Red-Hot-Chili-Peppers.mp3"
+    },
+    {
+        "titulo":  "Upside Down",
+        "artista":  "Jack Johnson",
+        "arquivo":  "musicas/Upside-Down-Jack-Johnson.mp3"
+    },
+    {
+        "titulo":  "We Will Rock You",
+        "artista":  "Queen",
+        "arquivo":  "musicas/We-Will-Rock-You-Queen.mp3"
+    },
+    {
+        "titulo":  "Wonderwall",
+        "artista":  "Oasis",
+        "arquivo":  "musicas/Wonderwall-Oasis.mp3"
+    },
+    {
+        "titulo":  "Yellow Ledbetter",
+        "artista":  "Pearl Jam",
+        "arquivo":  "musicas/Yellow-Ledbetter-Pearl-Jam.mp3"
+    },
+    {
+        "titulo":  "You Shook Me All Night Long",
+        "artista":  "AC/DC",
+        "arquivo":  "musicas/You-Shook-Me-All-Night-Long-ACDC.mp3"
+    }
 ]
