@@ -182,8 +182,8 @@
 
     <div id="diffGroup" class="z1" role="group" aria-label="Dificuldade">
       <button type="button" class="dbtn" data-diff="easy">Fácil</button>
-      <button type="button" class="dbtn" data-diff="medium">Médio</button>
-      <button type="button" class="dbtn active" data-diff="hard">Difícil</button>
+      <button type="button" class="dbtn active" data-diff="medium">Médio</button>
+      <button type="button" class="dbtn" data-diff="hard">Difícil</button>
     </div>
 
     <div class="sync-bar z1">
@@ -199,7 +199,7 @@
 
     <button type="button" id="startBtn" class="z1" disabled>
       <span>▶ TOCAR</span>
-      <span class="start-pill" id="startPill">Difícil</span>
+      <span class="start-pill" id="startPill">Médio</span>
     </button>
   </section>
 
@@ -209,7 +209,7 @@
       <button type="button" class="gbtn" id="backBtn">← Menu</button>
       <div class="game-meta">
         <div id="gameTitle">Ritmo MP3</div>
-        <div id="gameSub">Difícil</div>
+        <div id="gameSub">Médio</div>
       </div>
       <button type="button" class="gbtn" id="pause" disabled>Pausar</button>
     </div>
@@ -245,7 +245,7 @@ const DIFFS = {
   hard:   { label: 'Difícil', color: '#e05a5a', fall: 1.45, window: 0.18, mult: 1.05, bias: 0.022, subdiv: 4, snap: 0.08, beatTol: 0.42, minGapFactor: 0.21, minGapFloor: 0.115, contourGain: 1.15 }
 };
 
-let diffKey = 'hard';
+let diffKey = 'medium';
 let latencyMs = Number(localStorage.getItem('ritmo_lat_ms') || 0);
 if (Number.isNaN(latencyMs)) latencyMs = 0;
 

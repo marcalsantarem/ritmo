@@ -1,5 +1,5 @@
 // Guarda os arquivos da interface e cacheia músicas tocadas sob demanda
-const CACHE = 'ritmo-mp3-v6';
+const CACHE = 'ritmo-mp3-v7';
 const AUDIO_CACHE = 'ritmo-mp3-audio-v1';
 const FILES = [
   './',
